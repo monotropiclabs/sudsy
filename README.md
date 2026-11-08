@@ -6,23 +6,19 @@
 
 <p align="center">
   <b>Squeaky-clean secrets for any project.</b><br>
-  Per-environment <code>.env</code> vaults, encrypted with <a href="https://github.com/getsops/sops">sops</a> + <a href="https://github.com/FiloSottile/age">age</a>, committed right next to your code.<br>
+  Super simple and minimalist per-environment secrets management, built on top of <a href="https://github.com/getsops/sops">sops</a> + <a href="https://github.com/FiloSottile/age">age</a>.<br>
   <i>Lather, rinse, repeat.</i>
 </p>
 
 ---
+
+sudsy lets you create a locally encrypted vault for each environment that's committed next to your code, directly in git. Each teammate has their own private key to read the vaults.
 
 sops is fantastic, but every project ends up with the same pile of little wrapper scripts:
 make a key, add it to `.sops.yaml`, edit `dev.enc.env`, run something with `prod`'s secrets,
 re-encrypt everything when a teammate joins. **sudsy is that pile of scripts, scrubbed and
 packaged once.** It's a single bash script with no dependencies beyond sops and age, and it
 never touches crypto itself. sops and age do all the real work.
-
-```console
-$ sudsy run prod -- node server.js
-```
-
-That's the whole pitch. 🫧
 
 ## Install
 
