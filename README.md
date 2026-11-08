@@ -35,9 +35,11 @@ brew install sops age          # macOS / Linuxbrew
 Then sudsy itself, whichever way suits the project:
 
 ```bash
-npm install --save-dev sudsy   # per project: npm scripts find it automatically
-npm install --global sudsy     # or everywhere
+npm install --save-dev @monotropiclabs/sudsy   # per project: npm scripts find it automatically
+npm install --global @monotropiclabs/sudsy     # or everywhere
 ```
+
+Either way, the command is just `sudsy`.
 
 Not a Node project? It's one file, so just put it on your `PATH`:
 

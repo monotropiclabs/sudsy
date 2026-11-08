@@ -1,5 +1,5 @@
 {
-  "name": "sudsy",
+  "name": "@monotropiclabs/sudsy",
   "version": "0.1.0",
   "description": "Squeaky-clean secrets for any project: per-environment .env vaults on top of sops + age.",
   "bin": {
@@ -23,6 +23,9 @@
   ],
   "author": "Monotropic Labs",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/monotropiclabs/sudsy.git"
