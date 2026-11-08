@@ -1,0 +1,34 @@
+{
+  "name": "sudsy",
+  "version": "0.1.0",
+  "description": "Squeaky-clean secrets for any project: per-environment .env vaults on top of sops + age.",
+  "bin": {
+    "sudsy": "bin/sudsy"
+  },
+  "files": [
+    "bin",
+    "assets"
+  ],
+  "scripts": {
+    "test": "bash test/test.sh"
+  },
+  "keywords": [
+    "sops",
+    "age",
+    "secrets",
+    "dotenv",
+    "env",
+    "encryption",
+    "cli"
+  ],
+  "author": "Monotropic Labs",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/monotropiclabs/sudsy.git"
+  },
+  "homepage": "https://github.com/monotropiclabs/sudsy#readme",
+  "bugs": {
+    "url": "https://github.com/monotropiclabs/sudsy/issues"
+  }
+}

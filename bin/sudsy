@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+# sudsy: squeaky-clean secrets for any project, on top of sops + age.
+# https://github.com/monotropiclabs/sudsy (MIT)
+#
+# Written for bash 3.2+ so it runs on macOS's stock bash.
+set -euo pipefail
+
+VERSION="0.1.0"
+CONFIG=".sops.yaml"
+GLOBAL_KEY="${XDG_CONFIG_HOME:-$HOME/.config}/sops/age/keys.txt"
+
+usage() {
+  cat <<'EOF'
+  o   °  O   °
+ ╭───────────╮
+ │   sudsy   │  squeaky-clean secrets, powered by sops + age
+ ╰───────────╯
+
+Usage: sudsy <command> [args]
+
+  init                   find or create your age key and add it to ./.sops.yaml
+  key                    print your public key (send it to whoever onboards you)
+  edit <env>             edit <env>.enc.env in $SOPS_EDITOR/$EDITOR (creates it if new)
+  run <env> -- cmd...    run cmd with <env>'s secrets in its environment
+  cat <env>              print the decrypted dotenv
+  json <env>             print the decrypted secrets as a JSON object
+  get <env> <KEY>        print a single value
+  sync                   re-encrypt every vault for the recipients in .sops.yaml
+  ls                     list this project's environments
+  version                print the sudsy version
+
+Your private key is read from $SOPS_AGE_KEY_FILE, else ./secret.txt,
+else ~/.config/sops/age/keys.txt (one key for all your projects).
+In CI, set SOPS_AGE_KEY to the key's contents instead.
+EOF
+}
+
+die() { echo "sudsy: $*" >&2; exit 1; }
+say() { echo "🫧 $*"; }
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "$1 not found. Install it first (macOS: brew install sops age)"
+}
+
+key_file() {
+  if [ -n "${SOPS_AGE_KEY_FILE:-}" ]; then echo "$SOPS_AGE_KEY_FILE"
+  elif [ -f secret.txt ]; then echo "secret.txt"
+  else echo "$GLOBAL_KEY"; fi
+}
+
+# Run sops with our key. SOPS_AGE_KEY_FILE is only exported when the file exists: pointing
+# sops at a missing file makes it fail even when SOPS_AGE_KEY (CI) holds a valid key.
+s() {
+  need sops
+  local key; key="$(key_file)"
+  if [ -f "$key" ]; then SOPS_AGE_KEY_FILE="$key" sops "$@"
+  else
+    if [ -z "${SOPS_AGE_KEY:-}" ] && [ -z "${SOPS_AGE_KEY_CMD:-}" ]; then
+      die "no age key found at $key (run: sudsy init, or set SOPS_AGE_KEY)"
+    fi
+    env -u SOPS_AGE_KEY_FILE sops "$@"
+  fi
+}
+
+# <env>, <env>.enc.env and path/to/<env>.enc.env all mean ./<env>.enc.env
+vault_name() {
+  [ -n "${1:-}" ] || die "missing <env> (try: sudsy ls)"
+  echo "$(basename "$1" .enc.env).enc.env"
+}
+
+existing_vault() {
+  local f; f="$(vault_name "${1:-}")"
+  [ -f "$f" ] || die "no $f here (try: sudsy ls)"
+  echo "$f"
+}
+
+# POSIX single-quote every argument, so sops exec-env's `sh -c` sees them exactly as given.
+shquote() {
+  # Pattern and replacement live in variables: quote handling inside ${//} differs
+  # between bash 3.2 and 5.
+  local out="" arg sq="'" q="'\\''"
+  for arg in "$@"; do out="$out'${arg//$sq/$q}' "; done
+  echo "$out"
+}
+
+cmd_init() {
+  need age-keygen
+  local key; key="$(key_file)"
+  if [ -f "$key" ]; then
+    say "Using your existing key: $key"
+  else
+    mkdir -p "$(dirname "$key")"
+    (umask 077 && age-keygen -o "$key" 2>/dev/null)
+    say "Created a new key: $key"
+  fi
+
+  # A keys file can hold several identities: use the first, but accept any of them.
+  local pubs pub p
+  pubs="$(age-keygen -y "$key")"
+  pub="$(echo "$pubs" | head -n 1)"
+  echo "   Public key: $pub"
+
+  if [ ! -f "$CONFIG" ]; then
+    printf 'creation_rules:\n  - path_regex: \\.enc\\.\n    age: >-\n      %s\n' "$pub" > "$CONFIG"
+    say "Created $CONFIG with your key. Lather up: sudsy edit dev"
+  else
+    for p in $pubs; do
+      if grep -qF "$p" "$CONFIG"; then say "Your key is already in $CONFIG. Squeaky clean."; return 0; fi
+    done
+    grep -q 'age1' "$CONFIG" || die "no age recipients in $CONFIG; add $pub to it by hand"
+    # Append after the last age1 recipient, matching its indent.
+    local last tmp
+    last="$(grep -n 'age1' "$CONFIG" | tail -n 1 | cut -d: -f1)"
+    tmp="$(mktemp)"
+    awk -v n="$last" -v k="$pub" '
+      NR == n { match($0, /^[ \t]*/); ind = substr($0, 1, RLENGTH); sub(/,?[ \t]*$/, ","); print; print ind k; next }
+      { print }' "$CONFIG" > "$tmp"
+    cat "$tmp" > "$CONFIG" && rm -f "$tmp"
+    say "Added your key to $CONFIG."
+    echo "   Commit it, then ask someone who already has access to run: sudsy sync"
+  fi
+
+  if [ "$key" = "secret.txt" ] && [ -d .git ] && ! grep -qxF 'secret.txt' .gitignore 2>/dev/null; then
+    echo "secret.txt" >> .gitignore
+    say "Added secret.txt to .gitignore."
+  fi
+}
+
+cmd_key() {
+  need age-keygen
+  local key; key="$(key_file)"
+  [ -f "$key" ] || die "no age key at $key (run: sudsy init)"
+  age-keygen -y "$key"
+}
+
+cmd_edit() {
+  local f; f="$(vault_name "${1:-}")"
+  [ -f "$CONFIG" ] || die "no $CONFIG here (run: sudsy init)"
+  local rc=0
+  SOPS_EDITOR="${SOPS_EDITOR:-${EDITOR:-nano}}" s "$f" || rc=$?
+  # sops exits 200 when nothing changed; that's not an error.
+  if [ "$rc" -eq 200 ]; then say "No changes to $f."; return 0; fi
+  return "$rc"
+}
+
+cmd_run() {
+  local f; f="$(existing_vault "${1:-}")"; shift
+  [ "${1:-}" = "--" ] && shift
+  [ $# -gt 0 ] || die "usage: sudsy run <env> -- cmd..."
+  s exec-env --same-process "$f" "exec $(shquote "$@")"
+}
+
+cmd_get() {
+  local f; f="$(existing_vault "${1:-}")"
+  local k="${2:-}"
+  [ -n "$k" ] || die "usage: sudsy get <env> <KEY>"
+  case "$k" in *[!A-Za-z0-9_.-]*) die "invalid key name: $k" ;; esac
+  local v; v="$(s -d --extract "[\"$k\"]" "$f")" || die "$k not found in $f"
+  printf '%s\n' "$v"
+}
+
+cmd_cat() {
+  local f; f="$(existing_vault "${1:-}")"; shift
+  s -d "$@" "$f"
+}
+
+cmd_sync() {
+  local f found=""
+  for f in *.enc.*; do
+    [ -f "$f" ] || continue
+    found=1
+    say "Rinsing $f..."
+    s updatekeys -y "$f"
+  done
+  [ -n "$found" ] || die "no *.enc.* vaults here"
+  say "All vaults match $CONFIG."
+}
+
+cmd_ls() {
+  local f
+  for f in *.enc.env; do [ -f "$f" ] && echo "${f%.enc.env}"; done
+  return 0
+}
+
+sub="${1:-help}"
+[ $# -gt 0 ] && shift
+case "$sub" in
+  init) cmd_init ;;
+  key) cmd_key ;;
+  edit) cmd_edit "$@" ;;
+  run) [ $# -gt 0 ] || die "usage: sudsy run <env> -- cmd..."; cmd_run "$@" ;;
+  cat) cmd_cat "${1:-}" ;;
+  json) cmd_cat "${1:-}" --output-type json ;;
+  get) cmd_get "$@" ;;
+  sync) cmd_sync ;;
+  ls) cmd_ls ;;
+  version|-v|--version) echo "sudsy $VERSION" ;;
+  help|-h|--help) usage ;;
+  *) die "unknown command: $sub (try: sudsy help)" ;;
+esac

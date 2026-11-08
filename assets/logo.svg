@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 200" width="240" height="200" role="img" aria-labelledby="t">
+  <title id="t">sudsy: a bar of soap with a keyhole, blowing bubbles</title>
+  <defs>
+    <linearGradient id="soap" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7EE8D6"/>
+      <stop offset="1" stop-color="#2BB3A0"/>
+    </linearGradient>
+    <radialGradient id="bubble" cx="0.35" cy="0.35" r="0.75">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.9"/>
+      <stop offset="0.6" stop-color="#C9F1FF" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#9AD8FF" stop-opacity="0.65"/>
+    </radialGradient>
+  </defs>
+
+  <!-- bubbles -->
+  <g stroke="#4FA9E6" stroke-width="3" fill="url(#bubble)">
+    <circle cx="118" cy="44" r="22"/>
+    <circle cx="70" cy="66" r="13"/>
+    <circle cx="170" cy="64" r="12"/>
+    <circle cx="156" cy="22" r="8"/>
+    <circle cx="86" cy="26" r="6"/>
+  </g>
+  <g fill="#FFFFFF">
+    <ellipse cx="110" cy="35" rx="6" ry="4" transform="rotate(-35 110 35)"/>
+    <ellipse cx="66" cy="61" rx="3.5" ry="2.4" transform="rotate(-35 66 61)"/>
+    <ellipse cx="166" cy="59" rx="3.2" ry="2.2" transform="rotate(-35 166 59)"/>
+  </g>
+
+  <!-- shadow -->
+  <ellipse cx="120" cy="182" rx="74" ry="7" fill="#0B3B36" opacity="0.18"/>
+
+  <!-- soap bar -->
+  <rect x="38" y="96" width="164" height="80" rx="30" fill="url(#soap)" stroke="#1E8C7E" stroke-width="3"/>
+  <rect x="58" y="106" width="124" height="14" rx="7" fill="#FFFFFF" opacity="0.4"/>
+
+  <!-- keyhole -->
+  <g fill="#0F5E55">
+    <circle cx="120" cy="134" r="10"/>
+    <path d="M114 138 L126 138 L130 160 L110 160 Z"/>
+  </g>
+</svg>

@@ -1,0 +1,31 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS runs the stock bash 3.2 that sudsy promises to support.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install sops + age (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y age
+          curl -fsSL -o /usr/local/bin/sops https://github.com/getsops/sops/releases/download/v3.10.2/sops-v3.10.2.linux.amd64
+          chmod +x /usr/local/bin/sops
+      - name: Install sops + age, and use the stock bash 3.2 (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install sops age
+          mkdir -p "$RUNNER_TEMP/bash32" && ln -s /bin/bash "$RUNNER_TEMP/bash32/bash"
+          echo "$RUNNER_TEMP/bash32" >> "$GITHUB_PATH"
+      - name: Test
+        run: bash --version | head -1 && bash test/test.sh
