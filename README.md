@@ -70,7 +70,20 @@ sudsy edit demo
 
 Opens an editor for your secrets. Change a value, save, and exit: sudsy writes
 [`demo.enc.env`](demo.enc.env) with the values encrypted. Both files can go in git.
-Run `sudsy cat demo` to read the secrets back with your private key.
+
+That's it! 🫧
+
+```bash
+sudsy cat demo
+```
+
+Prints the decrypted file back, only if you have my private key:
+
+```
+# This is an example file.
+example_key=example_value
+example_multiline=foo\nbar\nbaz
+```
 
 ## Commands
 
