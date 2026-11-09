@@ -53,6 +53,25 @@ git add .sops.yaml dev.enc.env  # yes, commit the vault. It's encrypted.
 sudsy run dev -- npm start      # your app sees the secrets as env vars
 ```
 
+## Demo
+
+This repo has a real example. Here's how it was made:
+
+```bash
+sudsy init
+```
+
+Creates [`.sops.yaml`](.sops.yaml), which lists the public keys allowed to read the vaults.
+Your private key stays on your machine.
+
+```bash
+sudsy edit demo
+```
+
+Opens an editor for your secrets. Change a value, save, and exit: sudsy writes
+[`demo.enc.env`](demo.enc.env) with the values encrypted. Both files can go in git.
+Run `sudsy cat demo` to read the secrets back with your private key.
+
 ## Commands
 
 | Command | What it does |
