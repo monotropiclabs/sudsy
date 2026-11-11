@@ -96,7 +96,7 @@ example_multiline=foo\nbar\nbaz
 | `sudsy cat <env>` | Prints the decrypted dotenv. |
 | `sudsy json <env>` | Prints the secrets as one JSON object, handy from scripts. |
 | `sudsy get <env> <KEY>` | Prints a single value. |
-| `sudsy sync` | Re-encrypts every vault for whoever is listed in `.sops.yaml` now. |
+| `sudsy sync [--yes]` | Re-encrypts every vault for whoever is listed in `.sops.yaml` now. Shows which keys each vault gains or loses and asks first; `--yes` skips the question, for scripts. |
 | `sudsy ls` | Lists the environments in this project. |
 
 `<env>` is just a name: `sudsy edit staging` means `./staging.enc.env`.
@@ -130,6 +130,11 @@ git commit -am "Add my sudsy key" && git push
 ```bash
 git pull && sudsy sync && git commit -am "Re-encrypt vaults" && git push
 ```
+
+`sync` shows the keys each vault is about to gain and asks before re-encrypting. Read that
+list: anyone who can push to the repo can add a key to `.sops.yaml`, and saying yes lets that
+key read everything. Check each new key with its owner before you agree. Outside a terminal,
+`sync` refuses unless you pass `--yes`, so a script can't widen access without someone deciding to.
 
 **Removing someone**: delete their line from `.sops.yaml`, run `sudsy sync`, and commit.
 They can still read old versions from git history, so **rotate anything they had access
@@ -172,7 +177,7 @@ export DATABASE_URL="$(sudsy get prod DATABASE_URL)"
     SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
 ```
 
-Generate a key just for CI (`age-keygen`), add its public key to `.sops.yaml`, `sudsy sync`,
+Generate a key just for CI (`age-keygen`), add its public key to `.sops.yaml`, run `sudsy sync`,
 and store the private half as a repository secret.
 
 ## FAQ

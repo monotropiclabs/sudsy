@@ -25,7 +25,8 @@ Usage: sudsy <command> [args]
   cat <env>              print the decrypted dotenv
   json <env>             print the decrypted secrets as a JSON object
   get <env> <KEY>        print a single value
-  sync                   re-encrypt every vault for the recipients in .sops.yaml
+  sync [--yes]           re-encrypt every vault for the recipients in .sops.yaml,
+                         showing each change in readers first (--yes skips the review)
   ls                     list this project's environments
   version                print the sudsy version
 
@@ -164,16 +165,28 @@ cmd_cat() {
   s -d "$@" "$f"
 }
 
+# sync decides who can read every vault, and anyone who can push can add a key to .sops.yaml.
+# So sops shows each change in readers and asks first; only --yes skips that review, and with
+# no terminal to ask at, sync refuses rather than widen access unattended.
 cmd_sync() {
-  local f found=""
+  local yes="" f found=""
+  case "${1:-}" in
+    "") ;;
+    -y|--yes) yes=1 ;;
+    *) die "usage: sudsy sync [--yes]" ;;
+  esac
+  if [ -z "$yes" ] && [ ! -t 0 ]; then
+    die "sync changes who can read your vaults. Run it at a terminal to review each change, or pass --yes"
+  fi
   for f in *.enc.*; do
     [ -f "$f" ] || continue
     found=1
     say "Rinsing $f..."
-    s updatekeys -y "$f"
+    if [ -n "$yes" ]; then s updatekeys -y "$f"; else s updatekeys "$f"; fi
   done
   [ -n "$found" ] || die "no *.enc.* vaults here"
-  say "All vaults match $CONFIG."
+  if [ -n "$yes" ]; then say "All vaults match $CONFIG."
+  else say "Done. Any vault you declined is left as it was."; fi
 }
 
 cmd_ls() {
@@ -192,7 +205,7 @@ case "$sub" in
   cat) cmd_cat "${1:-}" ;;
   json) cmd_cat "${1:-}" --output-type json ;;
   get) cmd_get "$@" ;;
-  sync) cmd_sync ;;
+  sync) cmd_sync "$@" ;;
   ls) cmd_ls ;;
   version|-v|--version) echo "sudsy $VERSION" ;;
   help|-h|--help) usage ;;

@@ -126,9 +126,55 @@ as alice init >/dev/null
 write_vault alice dev $'A=1\n'
 as bob init >/dev/null
 check sh -c "! HOME='$TMP/home/bob' '$SUDSY' cat dev >/dev/null 2>&1"
-current="sync re-encrypts for bob"
-as alice sync >/dev/null 2>&1
+current="sync --yes re-encrypts for bob"
+as alice sync --yes >/dev/null 2>&1
 eq "$(as bob cat dev)" "A=1"
+
+fresh "sync without a terminal refuses unless --yes"
+as alice init >/dev/null
+write_vault alice dev $'A=1\n'
+as bob init >/dev/null
+before="$(cat dev.enc.env)"
+check sh -c "HOME='$TMP/home/alice' '$SUDSY' sync </dev/null 2>&1 | grep -q 'pass --yes'"
+current="the refused sync leaves the vault alone"
+eq "$(cat dev.enc.env)" "$before"
+
+fresh "sync rejects unknown options"
+as alice init >/dev/null
+write_vault alice dev $'A=1\n'
+check sh -c "! HOME='$TMP/home/alice' '$SUDSY' sync --force 2>/dev/null"
+
+# Run sudsy as <who> with a pseudo-terminal on stdin, answering sops's prompt with <answer>.
+# The answer waits a moment: BSD script passes input on at once, and typing that arrives
+# before sops asks is lost. util-linux and BSD script take their arguments differently.
+at_tty() {
+  local answer="$1" who="$2"; shift 2
+  local cmd="HOME='$TMP/home/$who' '$SUDSY' $*"
+  if script --version >/dev/null 2>&1; then
+    { sleep 1; printf '%s\n' "$answer"; } | script -qec "$cmd" /dev/null
+  else
+    { sleep 1; printf '%s\n' "$answer"; } | script -q /dev/null sh -c "$cmd"
+  fi
+}
+
+fresh "sync at a terminal shows the new key and re-encrypts on yes"
+as alice init >/dev/null
+write_vault alice dev $'A=1\n'
+as bob init >/dev/null
+out="$(at_tty y alice sync 2>&1)"
+check sh -c "printf '%s' \"\$1\" | grep -qF \"+++ \$2\"" _ "$out" "$(as bob key)"
+current="bob can decrypt after yes"
+eq "$(as bob cat dev)" "A=1"
+
+fresh "sync at a terminal leaves the vault alone on no"
+as alice init >/dev/null
+write_vault alice dev $'A=1\n'
+as bob init >/dev/null
+before="$(cat dev.enc.env)"
+out="$(at_tty n alice sync 2>&1)"
+check sh -c "printf '%s' \"\$1\" | grep -q 'left unchanged'" _ "$out"
+current="the declined vault is untouched"
+eq "$(cat dev.enc.env)" "$before"
 
 fresh "./secret.txt wins over the global key"
 as alice init >/dev/null
