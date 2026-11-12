@@ -144,6 +144,51 @@ as alice init >/dev/null
 write_vault alice dev $'A=1\n'
 check sh -c "! HOME='$TMP/home/alice' '$SUDSY' sync --force 2>/dev/null"
 
+fresh "grant lets a key read one environment only"
+as alice init >/dev/null
+write_vault alice dev $'A=1\n'; write_vault alice prod $'A=2\n'
+as ci init >/dev/null; rm .sops.yaml; as alice init >/dev/null
+as alice grant dev "$(as ci key)" >/dev/null
+as alice sync --yes >/dev/null 2>&1
+eq "$(as ci cat dev)" "A=1"
+current="the granted key still cannot read prod"
+check sh -c "! HOME='$TMP/home/ci' '$SUDSY' cat prod >/dev/null 2>&1"
+current="everyone who could read dev still can"
+eq "$(as alice cat dev)" "A=1"
+
+fresh "grant puts the env's rule before the catch-all"
+as alice init >/dev/null
+as ci init >/dev/null; rm .sops.yaml; as alice init >/dev/null
+as alice grant dev "$(as ci key)" >/dev/null
+expected="$(printf 'creation_rules:\n  - path_regex: (^|/)dev\\.enc\\.\n    age: >-\n      %s,\n      %s\n  - path_regex: \\.enc\\.\n    age: >-\n      %s' "$(as alice key)" "$(as ci key)" "$(as alice key)")"
+eq "$(cat .sops.yaml)" "$expected"
+
+fresh "grant twice is a no-op, and a second key joins the same rule"
+as alice init >/dev/null
+as ci init >/dev/null; as bob init >/dev/null; rm .sops.yaml; as alice init >/dev/null
+as alice grant dev "$(as ci key)" >/dev/null; before="$(cat .sops.yaml)"
+as alice grant dev.enc.env "$(as ci key)" >/dev/null
+eq "$(cat .sops.yaml)" "$before"
+current="a second grant appends to dev's rule"
+as alice grant dev "$(as bob key)" >/dev/null
+write_vault alice dev $'A=1\n'
+eq "$(as bob cat dev)$(as ci cat dev)" "A=1A=1"
+
+fresh "a new teammate is told which rules they are not in"
+as alice init >/dev/null
+as ci init >/dev/null; rm .sops.yaml; as alice init >/dev/null
+as alice grant dev "$(as ci key)" >/dev/null
+check sh -c "HOME='$TMP/home/bob' '$SUDSY' init | grep -q 'sudsy grant <env>'"
+
+fresh "grant rejects bad input"
+as alice init >/dev/null
+check sh -c "! HOME='$TMP/home/alice' '$SUDSY' grant dev age1NOPE 2>/dev/null"
+current="grant rejects an env name that is not a plain word"
+check sh -c "! HOME='$TMP/home/alice' '$SUDSY' grant 'a.b' '$(as alice key)' 2>/dev/null"
+current="grant needs the catch-all rule"
+printf 'creation_rules:\n  - path_regex: dev\n    age: %s\n' "$(as alice key)" > .sops.yaml
+check sh -c "HOME='$TMP/home/alice' '$SUDSY' grant dev '$(as alice key)' 2>&1 | grep -q 'by hand'"
+
 # Run sudsy as <who> with a pseudo-terminal on stdin, answering sops's prompt with <answer>.
 # The answer waits a moment: BSD script passes input on at once, and typing that arrives
 # before sops asks is lost. util-linux and BSD script take their arguments differently.

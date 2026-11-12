@@ -25,6 +25,7 @@ Usage: sudsy <command> [args]
   cat <env>              print the decrypted dotenv
   json <env>             print the decrypted secrets as a JSON object
   get <env> <KEY>        print a single value
+  grant <env> <pubkey>   let one more key read just <env> (then run: sudsy sync)
   sync [--yes]           re-encrypt every vault for the recipients in .sops.yaml,
                          showing each change in readers first (--yes skips the review)
   ls                     list this project's environments
@@ -84,6 +85,30 @@ shquote() {
   echo "$out"
 }
 
+# .sops.yaml is edited only in the shape sudsy writes: list items starting "- path_regex: ...",
+# each with an "age: >-" list of recipients, one per line. sops uses the first rule whose
+# path_regex matches, so init's catch-all comes last and grant puts each env's rule before it.
+CATCH_ALL='\.enc\.'
+env_regex() { printf '(^|/)%s\\.enc\\.' "$1"; }
+
+# Values reach awk through ENVIRON: awk -v would turn the regex's \. into a plain dot.
+# Line number of the rule whose path_regex is exactly $1, or nothing.
+rule_line() {
+  R="$1" awk 'BEGIN { r = ENVIRON["R"] } { l = $0; if (sub(/^[ \t]*-[ \t]*path_regex:[ \t]*/, "", l)) { sub(/[ \t]+$/, "", l); if (l == r) { print NR; exit } } }' "$CONFIG"
+}
+# The age1 recipients of the rule starting at line $1, and the line its last one is on.
+rule_recipients() { awk -v n="$1" 'NR > n && /^[ \t]*-[ \t]/ { exit } NR >= n' "$CONFIG" | grep -oE 'age1[0-9a-z]+' || true; }
+rule_last_recipient_line() { awk -v n="$1" 'NR > n && /^[ \t]*-[ \t]/ { exit } NR >= n && /age1/ { last = NR } END { print last + 0 }' "$CONFIG"; }
+
+# Add recipient $2 on a new line after line $1, matching its indent.
+append_recipient() {
+  local tmp; tmp="$(mktemp)"
+  awk -v n="$1" -v k="$2" '
+    NR == n { match($0, /^[ \t]*/); ind = substr($0, 1, RLENGTH); sub(/,?[ \t]*$/, ","); print; print ind k; next }
+    { print }' "$CONFIG" > "$tmp"
+  cat "$tmp" > "$CONFIG" && rm -f "$tmp"
+}
+
 cmd_init() {
   need age-keygen
   local key; key="$(key_file)"
@@ -109,16 +134,14 @@ cmd_init() {
       if grep -qF "$p" "$CONFIG"; then say "Your key is already in $CONFIG. Squeaky clean."; return 0; fi
     done
     grep -q 'age1' "$CONFIG" || die "no age recipients in $CONFIG; add $pub to it by hand"
-    # Append after the last age1 recipient, matching its indent.
-    local last tmp
-    last="$(grep -n 'age1' "$CONFIG" | tail -n 1 | cut -d: -f1)"
-    tmp="$(mktemp)"
-    awk -v n="$last" -v k="$pub" '
-      NR == n { match($0, /^[ \t]*/); ind = substr($0, 1, RLENGTH); sub(/,?[ \t]*$/, ","); print; print ind k; next }
-      { print }' "$CONFIG" > "$tmp"
-    cat "$tmp" > "$CONFIG" && rm -f "$tmp"
+    # Append after the last age1 recipient, which is in the catch-all rule.
+    append_recipient "$(grep -n 'age1' "$CONFIG" | tail -n 1 | cut -d: -f1)" "$pub"
     say "Added your key to $CONFIG."
     echo "   Commit it, then ask someone who already has access to run: sudsy sync"
+    if [ "$(grep -c 'path_regex:' "$CONFIG")" -gt 1 ]; then
+      echo "   $CONFIG has more than one rule, and you're only in the last. For each environment"
+      echo "   with its own rule, someone runs: sudsy grant <env> $pub"
+    fi
   fi
 
   if [ "$key" = "secret.txt" ] && [ -d .git ] && ! grep -qxF 'secret.txt' .gitignore 2>/dev/null; then
@@ -165,6 +188,39 @@ cmd_cat() {
   s -d "$@" "$f"
 }
 
+cmd_grant() {
+  [ $# -eq 2 ] || die "usage: sudsy grant <env> <pubkey>"
+  local env k n r recipients block tmp
+  env="$(basename "$1" .enc.env)"; k="$2"
+  case "$env" in ""|*[!A-Za-z0-9_-]*) die "grant needs an env name of letters, digits, - and _: $env" ;; esac
+  case "$k" in age1*) ;; *) die "not an age public key: $k" ;; esac
+  # Spelled out: in some locales a range like a-z also matches capitals.
+  case "${k#age1}" in ""|*[!0123456789abcdefghijklmnopqrstuvwxyz]*) die "not an age public key: $k" ;; esac
+  [ -f "$CONFIG" ] || die "no $CONFIG here (run: sudsy init)"
+
+  n="$(rule_line "$(env_regex "$env")")"
+  if [ -n "$n" ]; then
+    if rule_recipients "$n" | grep -qxF "$k"; then say "$k can already read $env."; return 0; fi
+    append_recipient "$(rule_last_recipient_line "$n")" "$k"
+  else
+    n="$(rule_line "$CATCH_ALL")"
+    [ -n "$n" ] || die "grant needs the catch-all rule (path_regex: $CATCH_ALL) that sudsy init writes; edit $CONFIG by hand"
+    # The new rule starts as a copy of the catch-all's readers, so nobody loses access to $env.
+    recipients="$( (rule_recipients "$n"; echo "$k") | awk '!seen[$0]++')"
+    block="$(printf -- '- path_regex: %s\n  age: >-\n' "$(env_regex "$env")")"
+    for r in $recipients; do block="$block"$'\n'"    $r,"; done
+    block="${block%,}"
+    tmp="$(mktemp)"
+    B="$block" awk -v n="$n" '
+      BEGIN { b = ENVIRON["B"] }
+      NR == n { match($0, /^[ \t]*/); ind = substr($0, 1, RLENGTH); c = split(b, ls, "\n"); for (i = 1; i <= c; i++) print ind ls[i] }
+      { print }' "$CONFIG" > "$tmp"
+    cat "$tmp" > "$CONFIG" && rm -f "$tmp"
+  fi
+  say "$k can read $env once its vault is re-encrypted."
+  echo "   Commit $CONFIG, then run: sudsy sync"
+}
+
 # sync decides who can read every vault, and anyone who can push can add a key to .sops.yaml.
 # So sops shows each change in readers and asks first; only --yes skips that review, and with
 # no terminal to ask at, sync refuses rather than widen access unattended.
@@ -205,6 +261,7 @@ case "$sub" in
   cat) cmd_cat "${1:-}" ;;
   json) cmd_cat "${1:-}" --output-type json ;;
   get) cmd_get "$@" ;;
+  grant) cmd_grant "$@" ;;
   sync) cmd_sync "$@" ;;
   ls) cmd_ls ;;
   version|-v|--version) echo "sudsy $VERSION" ;;
