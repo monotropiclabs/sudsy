@@ -97,6 +97,7 @@ example_multiline=foo\nbar\nbaz
 | `sudsy json <env>` | Prints the secrets as one JSON object, handy from scripts. |
 | `sudsy get <env> <KEY>` | Prints a single value. |
 | `sudsy sync [--yes]` | Re-encrypts every vault for whoever is listed in `.sops.yaml` now. Shows which keys each vault gains or loses and asks first; `--yes` skips the question, for scripts. |
+| `sudsy revoke [--yes] <pubkey>` | Removes a key from `.sops.yaml`, re-encrypts every vault it could read with a new data key, and lists the secret names it could see so you can rotate them. Reviews like `sync`. |
 | `sudsy ls` | Lists the environments in this project. |
 
 `<env>` is just a name: `sudsy edit staging` means `./staging.enc.env`.
@@ -136,9 +137,19 @@ list: anyone who can push to the repo can add a key to `.sops.yaml`, and saying 
 key read everything. Check each new key with its owner before you agree. Outside a terminal,
 `sync` refuses unless you pass `--yes`, so a script can't widen access without someone deciding to.
 
-**Removing someone**: delete their line from `.sops.yaml`, run `sudsy sync`, and commit.
-They can still read old versions from git history, so **rotate anything they had access
-to**. No amount of soap washes that off.
+**Removing someone**:
+
+```bash
+sudsy revoke age1their...   # then commit .sops.yaml and the vaults
+```
+
+`revoke` takes their key out of every rule, re-encrypts each vault they could read (reviewed
+like `sync`), and gives those vaults a new data key with `sops rotate`, so a data key they kept
+no longer opens them. It won't revoke your own key, or leave a rule with nobody able to read it.
+
+It ends with the names of every secret they could read. They can still read old versions from
+git history, so **rotate each of those at its source**: a new API key, a new password. No
+amount of soap washes that off.
 
 ## Recipes
 

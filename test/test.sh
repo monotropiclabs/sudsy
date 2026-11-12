@@ -176,6 +176,51 @@ check sh -c "printf '%s' \"\$1\" | grep -q 'left unchanged'" _ "$out"
 current="the declined vault is untouched"
 eq "$(cat dev.enc.env)" "$before"
 
+# alice and bob can both read dev; alice revokes bob.
+two_readers() { as alice init >/dev/null; as bob init >/dev/null; write_vault alice dev $'A=1\nB=two\n'; }
+
+fresh "revoke removes the key, so it can no longer decrypt"
+two_readers
+before_a="$(grep '^A=' dev.enc.env)"
+out="$(as alice revoke --yes "$(as bob key)" 2>&1)"
+check sh -c "! HOME='$TMP/home/bob' '$SUDSY' cat dev >/dev/null 2>&1"
+current="revoke leaves .sops.yaml as init would have written it for alice alone"
+eq "$(cat .sops.yaml)" "$(printf 'creation_rules:\n  - path_regex: \\.enc\\.\n    age: >-\n      %s' "$(as alice key)")"
+current="revoke gives the vault a new data key"
+check test "$(grep '^A=' dev.enc.env)" != "$before_a"
+current="revoke lists the secret names to rotate, never the values"
+check sh -c "printf '%s' \"\$1\" | grep -qF 'dev.enc.env: A B' && ! printf '%s' \"\$1\" | grep -q 'two'" _ "$out"
+current="alice still reads dev after revoke"
+eq "$(as alice cat dev)" $'A=1\nB=two'
+
+fresh "revoke refuses without a terminal unless --yes, and changes nothing"
+two_readers
+before="$(cat .sops.yaml)"
+check sh -c "! HOME='$TMP/home/alice' '$SUDSY' revoke '$(as bob key)' </dev/null 2>/dev/null"
+current="the refused revoke leaves .sops.yaml alone"
+eq "$(cat .sops.yaml)" "$before"
+
+fresh "revoke refuses your own key, and a key that is not there"
+two_readers
+check sh -c "HOME='$TMP/home/alice' '$SUDSY' revoke --yes '$(as alice key)' 2>&1 | grep -q 'your own key'"
+current="revoke of an unknown key fails"
+check sh -c "HOME='$TMP/home/alice' '$SUDSY' revoke --yes '$(age-keygen 2>/dev/null | age-keygen -y)' 2>&1 | grep -q 'is not in'"
+
+fresh "revoke will not leave a rule with no readers"
+as alice init >/dev/null; write_vault alice dev $'A=1\n'
+as bob init >/dev/null; printf 'creation_rules:\n  - path_regex: \\.enc\\.\n    age: >-\n      %s\n' "$(as bob key)" > .sops.yaml
+before="$(cat .sops.yaml)"
+check sh -c "HOME='$TMP/home/alice' '$SUDSY' revoke --yes '$(as bob key)' 2>&1 | grep -q 'no readers'"
+current="the refused revoke leaves .sops.yaml alone"
+eq "$(cat .sops.yaml)" "$before"
+
+fresh "revoke declined at a terminal says the vault is still readable"
+two_readers
+out="$(at_tty n alice revoke "$(as bob key)" 2>&1)"
+check sh -c "printf '%s' \"\$1\" | grep -q 'still readable'" _ "$out"
+current="bob can still read the declined vault"
+eq "$(as bob cat dev)" $'A=1\nB=two'
+
 fresh "./secret.txt wins over the global key"
 as alice init >/dev/null
 cp "$TMP/home/alice/.config/sops/age/keys.txt" secret.txt
