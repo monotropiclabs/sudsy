@@ -1,0 +1,59 @@
+name: release
+
+# Push a tag vX.Y.Z to publish that version. The tag has to match package.json and bin/sudsy,
+# and the full test suite has to pass first. Then:
+#   - npm gets the package through trusted publishing, so no npm token is stored anywhere and
+#     every version carries a provenance attestation linking it to this workflow run
+#   - a GitHub release gets bin/sudsy and its SHA-256, for installs that pin a version
+# One-time setup on npmjs.com: package settings, Trusted Publisher, GitHub Actions, repository
+# monotropiclabs/sudsy, workflow release.yml.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches package.json and bin/sudsy
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p 'require("./package.json").version')"
+          bin="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' bin/sudsy)"
+          if [ "$tag" != "$pkg" ] || [ "$tag" != "$bin" ]; then
+            echo "::error::tag $GITHUB_REF_NAME, package.json $pkg, bin/sudsy $bin: all three must match"
+            exit 1
+          fi
+
+  test:
+    needs: version
+    uses: ./.github/workflows/test.yml
+
+  publish:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub release
+      id-token: write # npm trusted publishing and provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # npm 11.5.1+ is needed for trusted publishing; Node 24 ships it.
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+      - name: GitHub release with the script and its checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp bin/sudsy "$RUNNER_TEMP/sudsy"
+          (cd "$RUNNER_TEMP" && sha256sum sudsy > sudsy.sha256)
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/sudsy" "$RUNNER_TEMP/sudsy.sha256" \
+            --verify-tag --title "sudsy $GITHUB_REF_NAME" --generate-notes
