@@ -111,8 +111,10 @@ sudsy is a handful of conventions on top of sops:
 - **Your private key lives in one place for all your projects**:
   `~/.config/sops/age/keys.txt`. sudsy looks for it in this order:
   1. `$SOPS_AGE_KEY_FILE`, if you set it
-  2. `./secret.txt` in the project (handy for older setups, and `init` gitignores it)
-  3. `~/.config/sops/age/keys.txt`
+  2. the output of `$SOPS_AGE_KEY_CMD`, if you set it (see [Recipes](#recipes): keep the key in
+     a password manager)
+  3. `./secret.txt` in the project (handy for older setups, and `init` gitignores it)
+  4. `~/.config/sops/age/keys.txt`
 
   In CI, put the key's contents in `SOPS_AGE_KEY` instead. No file needed.
 
@@ -179,6 +181,23 @@ export DATABASE_URL="$(sudsy get prod DATABASE_URL)"
 
 Generate a key just for CI (`age-keygen`), add its public key to `.sops.yaml`, run `sudsy sync`,
 and store the private half as a repository secret.
+
+**Keep your key in a password manager**
+
+A key file on disk can be read by anything running as you. Instead, store the key in your
+password manager and let sudsy (and sops) ask for it each time:
+
+```bash
+# 1Password: save the contents of keys.txt as a password item named "age key"
+export SOPS_AGE_KEY_CMD='op read "op://Private/age key/password"'
+# pass
+export SOPS_AGE_KEY_CMD='pass show age-key'
+```
+
+Put the export in your shell profile, check that `sudsy key` still prints your public key, then
+delete `~/.config/sops/age/keys.txt`. Every command works the same; `init` and `key` read the
+key from the command too. This needs sops 3.10 or newer. sops runs the command directly rather than through a shell, so it can
+take quoted arguments but not pipes; wrap anything fancier in a small script.
 
 ## FAQ
 

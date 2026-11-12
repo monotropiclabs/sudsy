@@ -200,6 +200,33 @@ write_vault alice dev $'A=1\n'
 secret="$(grep AGE-SECRET "$TMP/home/alice/.config/sops/age/keys.txt")"
 eq "$(SOPS_AGE_KEY="$secret" as ci cat dev)" "A=1"
 
+# A stand-in password manager: the key lives outside every place sudsy looks for a file.
+fresh "SOPS_AGE_KEY_CMD: init uses the command's key and writes no key file"
+(umask 077; age-keygen -o "$TMP/manager key.txt" 2>/dev/null)
+export SOPS_AGE_KEY_CMD="cat '$TMP/manager key.txt'"
+as alice init >/dev/null
+check test ! -e "$TMP/home/alice/.config/sops/age/keys.txt"
+current="SOPS_AGE_KEY_CMD: .sops.yaml gets the command's public key"
+check grep -qF "$(age-keygen -y "$TMP/manager key.txt")" .sops.yaml
+current="SOPS_AGE_KEY_CMD: key prints the same public key"
+eq "$(as alice key)" "$(age-keygen -y "$TMP/manager key.txt")"
+current="SOPS_AGE_KEY_CMD: edit and cat work with no key file"
+write_vault alice dev $'A=1\n'
+eq "$(as alice cat dev)" "A=1"
+
+fresh "SOPS_AGE_KEY_CMD: a command that prints no key is a clear error"
+export SOPS_AGE_KEY_CMD="echo nope"
+check sh -c "HOME='$TMP/home/alice' '$SUDSY' key 2>&1 | grep -q 'SOPS_AGE_KEY_CMD did not print'"
+current="SOPS_AGE_KEY_CMD: the failed init writes no .sops.yaml"
+as alice init >/dev/null 2>&1
+check test ! -e .sops.yaml
+
+fresh "SOPS_AGE_KEY_FILE wins over SOPS_AGE_KEY_CMD"
+export SOPS_AGE_KEY_CMD="echo nope"
+(umask 077; age-keygen -o "$TMP/file.txt" 2>/dev/null)
+eq "$(SOPS_AGE_KEY_FILE="$TMP/file.txt" as alice key)" "$(age-keygen -y "$TMP/file.txt")"
+unset SOPS_AGE_KEY_CMD
+
 fresh "no key at all is a friendly error"
 as alice init >/dev/null
 write_vault alice dev $'A=1\n'
