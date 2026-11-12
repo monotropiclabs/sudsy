@@ -184,9 +184,27 @@ write_vault alice dev $'A=1\n'
 eq "$(as alice cat dev)" "A=1"
 
 fresh "init with ./secret.txt adds it to .gitignore"
-mkdir .git; (umask 077; age-keygen -o secret.txt 2>/dev/null)
+git init -q; (umask 077; age-keygen -o secret.txt 2>/dev/null)
 as alice init >/dev/null
 eq "$(cat .gitignore)" "secret.txt"
+
+fresh "init gitignores ./secret.txt in a git worktree"
+git init -q main
+git -C main -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m init
+git -C main worktree add -q ../wt 2>/dev/null
+cd wt; (umask 077; age-keygen -o secret.txt 2>/dev/null)
+as alice init >/dev/null
+check git check-ignore -q secret.txt
+
+fresh "init leaves .gitignore alone when a pattern already covers ./secret.txt"
+git init -q; printf '*.txt\n' > .gitignore; (umask 077; age-keygen -o secret.txt 2>/dev/null)
+as alice init >/dev/null
+eq "$(cat .gitignore)" "*.txt"
+
+fresh "init outside git writes no .gitignore"
+(umask 077; age-keygen -o secret.txt 2>/dev/null)
+GIT_CEILING_DIRECTORIES="$TMP" as alice init >/dev/null
+check test ! -e .gitignore
 
 fresh "SOPS_AGE_KEY_FILE overrides everything"
 as alice init >/dev/null
