@@ -176,6 +176,49 @@ check sh -c "printf '%s' \"\$1\" | grep -q 'left unchanged'" _ "$out"
 current="the declined vault is untouched"
 eq "$(cat dev.enc.env)" "$before"
 
+# check looks at what git would commit, so these tests stage files and use no key at all.
+repo_with_vault() { git init -q; as alice init >/dev/null; write_vault alice dev $'A=1\n'; git add .sops.yaml dev.enc.env; }
+check_fails_with() {
+  local err; err="$(HOME="$TMP/home/nobody" "$SUDSY" check 2>&1 >/dev/null)" && return 1
+  printf '%s' "$err" | grep -qF "$1"
+}
+
+fresh "check passes on an encrypted vault, with no key"
+repo_with_vault
+check env HOME="$TMP/home/nobody" "$SUDSY" check
+
+fresh "check fails on a plaintext file named like a vault"
+repo_with_vault
+printf 'A=1\n' > prod.enc.env; git add prod.enc.env
+check check_fails_with "prod.enc.env: not encrypted"
+
+fresh "check fails on a staged plaintext .env, even once deleted from disk"
+repo_with_vault
+printf 'A=1\n' > .env; git add .env; rm .env
+check check_fails_with ".env: looks like a plaintext dotenv"
+
+fresh "check allows .env.example"
+repo_with_vault
+printf 'A=\n' > .env.example; git add .env.example
+check env HOME="$TMP/home/nobody" "$SUDSY" check
+
+fresh "check fails on a staged age private key, without printing it"
+repo_with_vault
+mkdir -p config; cp "$TMP/home/alice/.config/sops/age/keys.txt" config/key.txt; git add config/key.txt
+out="$(HOME="$TMP/home/nobody" "$SUDSY" check 2>&1)"
+check sh -c "printf '%s' \"\$1\" | grep -qF 'config/key.txt: contains an age private key'" _ "$out"
+current="check does not print the private key"
+check sh -c "! printf '%s' \"\$1\" | grep -q AGE-SECRET-KEY" _ "$out"
+
+fresh "check ignores unstaged changes"
+repo_with_vault
+printf 'A=1\n' > dev.enc.env
+check env HOME="$TMP/home/nobody" "$SUDSY" check
+
+fresh "check outside git still checks the vaults on disk"
+as alice init >/dev/null; write_vault alice dev $'A=1\n'; printf 'A=1\n' > prod.enc.env
+check sh -c "! GIT_CEILING_DIRECTORIES='$TMP' HOME='$TMP/home/nobody' '$SUDSY' check 2>/dev/null"
+
 fresh "./secret.txt wins over the global key"
 as alice init >/dev/null
 cp "$TMP/home/alice/.config/sops/age/keys.txt" secret.txt

@@ -98,6 +98,7 @@ example_multiline=foo\nbar\nbaz
 | `sudsy get <env> <KEY>` | Prints a single value. |
 | `sudsy sync [--yes]` | Re-encrypts every vault for whoever is listed in `.sops.yaml` now. Shows which keys each vault gains or loses and asks first; `--yes` skips the question, for scripts. |
 | `sudsy ls` | Lists the environments in this project. |
+| `sudsy check` | Fails if a vault isn't encrypted, or git is about to commit a plaintext `.env` or an age private key. Needs no key, so it fits a pre-commit hook or CI. |
 
 `<env>` is just a name: `sudsy edit staging` means `./staging.enc.env`.
 
@@ -179,6 +180,26 @@ export DATABASE_URL="$(sudsy get prod DATABASE_URL)"
 
 Generate a key just for CI (`age-keygen`), add its public key to `.sops.yaml`, run `sudsy sync`,
 and store the private half as a repository secret.
+
+**Catch a plaintext secret before it's committed**
+
+`sudsy check` looks at what the next commit holds (staged changes included) and fails if:
+
+- a `*.enc.*` vault isn't actually encrypted (say, someone saved plaintext over it)
+- a plaintext dotenv (`.env`, `.env.*`, `*.env`) is in git; names ending `.example`,
+  `.sample`, `.template` or `.dist` are allowed
+- any file contains an age private key
+
+It needs no key, so run it as a pre-commit hook and again in CI, which catches commits made
+with `--no-verify`:
+
+```bash
+printf '#!/bin/sh\nexec sudsy check\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+```
+
+```yaml
+- run: npx --no sudsy check   # with sudsy in devDependencies; --no stops npx downloading anything
+```
 
 ## FAQ
 
