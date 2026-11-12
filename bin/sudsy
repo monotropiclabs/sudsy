@@ -121,7 +121,10 @@ cmd_init() {
     echo "   Commit it, then ask someone who already has access to run: sudsy sync"
   fi
 
-  if [ "$key" = "secret.txt" ] && [ -d .git ] && ! grep -qxF 'secret.txt' .gitignore 2>/dev/null; then
+  # Ask git rather than look for a .git dir: in a worktree or a subdirectory .git is a file or
+  # not there at all, and check-ignore also sees patterns and excludes beyond ./.gitignore.
+  if [ "$key" = "secret.txt" ] && command -v git >/dev/null 2>&1 \
+    && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! git check-ignore -q secret.txt; then
     echo "secret.txt" >> .gitignore
     say "Added secret.txt to .gitignore."
   fi
