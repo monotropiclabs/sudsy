@@ -140,6 +140,12 @@ shquote() {
   echo "$out"
 }
 
+# $1 with YAML comments blanked out, line for line, so line numbers still match the file.
+# A comment starts at a # at the start of a line or after a blank; age keys never contain #.
+strip_yaml_comments() {
+  awk '{ if ($0 ~ /^[ \t]*#/) $0 = ""; else if (match($0, /[ \t]#/)) $0 = substr($0, 1, RSTART - 1); print }' "$1"
+}
+
 cmd_init() {
   need age-keygen
   local key=""
@@ -163,16 +169,28 @@ cmd_init() {
     printf 'creation_rules:\n  - path_regex: \\.enc\\.\n    age: >-\n      %s\n' "$pub" > "$CONFIG"
     say "Created $CONFIG with your key. Lather up: sudsy edit dev"
   else
+    # Only YAML outside comments counts: a commented-out (say, revoked) key is not a reader,
+    # and the new key must not land after one.
+    local live; live="$(strip_yaml_comments "$CONFIG")"
     for p in $pubs; do
-      if grep -qF "$p" "$CONFIG"; then say "Your key is already in $CONFIG. Squeaky clean."; return 0; fi
+      if printf '%s\n' "$live" | grep -qF "$p"; then say "Your key is already in $CONFIG. Squeaky clean."; return 0; fi
     done
-    grep -q 'age1' "$CONFIG" || die "no age recipients in $CONFIG; add $pub to it by hand"
-    # Append after the last age1 recipient, matching its indent.
+    printf '%s\n' "$live" | grep -q 'age1' || die "no age recipients in $CONFIG; add $pub to it by hand"
+    # Append after the last age1 recipient, matching its indent: on its own line in an
+    # `age: >-` list, or on the same line for an inline `age: age1...,age1...`. A trailing
+    # comment stays after the recipients, so the comma goes before it.
     local last tmp
-    last="$(grep -n 'age1' "$CONFIG" | tail -n 1 | cut -d: -f1)"
+    last="$(printf '%s\n' "$live" | grep -n 'age1' | tail -n 1 | cut -d: -f1)"
     tmp="$(mktemp)"
     awk -v n="$last" -v k="$pub" '
-      NR == n { match($0, /^[ \t]*/); ind = substr($0, 1, RLENGTH); sub(/,?[ \t]*$/, ","); print; print ind k; next }
+      NR == n {
+        code = $0; note = ""
+        if (match($0, /[ \t]#/)) { code = substr($0, 1, RSTART - 1); note = substr($0, RSTART) }
+        sub(/[ \t,]*$/, "", code)
+        if (code ~ /age:[ \t]*[^ \t>|]/) { print code "," k note; next }
+        match(code, /^[ \t]*/); ind = substr(code, 1, RLENGTH)
+        print code "," note; print ind k; next
+      }
       { print }' "$CONFIG" > "$tmp"
     cat "$tmp" > "$CONFIG" && rm -f "$tmp"
     say "Added your key to $CONFIG."

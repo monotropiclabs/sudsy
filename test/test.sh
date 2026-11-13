@@ -50,6 +50,36 @@ as bob init >/dev/null
 expected="$(printf 'creation_rules:\n  - path_regex: \\.enc\\.\n    age: >-\n      %s,\n      %s' "$(as alice key)" "$(as bob key)")"
 eq "$(cat .sops.yaml)" "$expected"
 
+fresh "init ignores a commented-out key after the recipient list"
+as alice init >/dev/null
+old="$(age-keygen 2>/dev/null | age-keygen -y)"
+printf '    # revoked: %s\n' "$old" >> .sops.yaml
+as bob init >/dev/null
+expected="$(printf 'creation_rules:\n  - path_regex: \\.enc\\.\n    age: >-\n      %s,\n      %s\n    # revoked: %s' "$(as alice key)" "$(as bob key)" "$old")"
+eq "$(cat .sops.yaml)" "$expected"
+current="a vault made after that init opens for the new reader"
+write_vault alice dev $'A=1\n'
+eq "$(as bob cat dev)" "A=1"
+
+fresh "init does not count a commented-out copy of your key as access"
+as alice init >/dev/null
+mkdir -p "$TMP/home/bob/.config/sops/age" && age-keygen -o "$TMP/home/bob/.config/sops/age/keys.txt" 2>/dev/null
+printf '# was: %s\n' "$(as bob key)" >> .sops.yaml
+out="$(as bob init 2>&1)"
+check sh -c "! printf '%s' \"\$1\" | grep -q 'already in'" _ "$out"
+current="the key is added to the real list"
+check sh -c "sed -n 5p .sops.yaml | grep -qxF '      $(as bob key)'"
+
+fresh "init extends an inline age: list, keeping its comment"
+as alice init >/dev/null
+printf 'creation_rules:\n  - path_regex: \\.enc\\.\n    age: %s # alice\n' "$(as alice key)" > .sops.yaml
+as bob init >/dev/null
+expected="$(printf 'creation_rules:\n  - path_regex: \\.enc\\.\n    age: %s,%s # alice' "$(as alice key)" "$(as bob key)")"
+eq "$(cat .sops.yaml)" "$expected"
+current="a vault made after the inline init opens for the new reader"
+write_vault alice dev $'A=1\n'
+eq "$(as bob cat dev)" "A=1"
+
 fresh "key file is private"
 as alice init >/dev/null
 perms="$(ls -l "$TMP/home/alice/.config/sops/age/keys.txt" | cut -c1-10)"
