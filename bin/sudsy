@@ -28,6 +28,8 @@ Usage: sudsy <command> [args]
   sync [--yes]           re-encrypt every vault for the recipients in .sops.yaml,
                          showing each change in readers first (--yes skips the review)
   ls                     list this project's environments
+  check                  fail if a vault is not encrypted, or git is about to commit a
+                         plaintext .env or an age private key (for pre-commit and CI)
   version                print the sudsy version
 
 Your private key is read from $SOPS_AGE_KEY_FILE, else the output of
@@ -245,6 +247,64 @@ cmd_sync() {
   else say "Done. Any vault you declined is left as it was."; fi
 }
 
+# check is for a pre-commit hook or CI. It needs no key, and in a git repo it looks at the
+# index (what the next commit holds, staged changes included), not at the working copy.
+check_problem() { echo "sudsy: $*" >&2; problems=$((problems + 1)); }
+
+# check_vault <file to inspect> <name to report>
+check_vault() {
+  local status
+  # Older sops fails outright on plaintext instead of reporting "encrypted":false.
+  status="$(sops filestatus "$1" 2>/dev/null)" || { check_problem "$2: not encrypted (sops cannot read it as a vault)"; return 0; }
+  case "$status" in *'"encrypted":true'*) ;; *) check_problem "$2: not encrypted" ;; esac
+}
+
+cmd_check() {
+  [ $# -eq 0 ] || die "usage: sudsy check"
+  need sops
+  local problems=0 f tmp keys rc=0
+  if ! command -v git >/dev/null 2>&1 || ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    for f in *.enc.*; do [ -f "$f" ] && check_vault "$f" "$f"; done
+    [ "$problems" -eq 0 ] || die "$problems problem(s) found"
+    say "Vaults are encrypted. (Not a git repo, so nothing else to check.)"
+    return 0
+  fi
+
+  # Work from the top of the repo so ls-files, show :path and grep all use root-relative
+  # paths, and the whole index is checked even when run from a subdirectory.
+  cd "$(git rev-parse --show-toplevel)" || die "cannot find the top of the git repo"
+  # The vault copies and the key-scan results live in separate temp locations, so a vault
+  # path (say keys/dev.enc.env) can never collide with the results file.
+  tmp="$(mktemp -d)" && keys="$(mktemp)" || die "cannot create a temp file"
+  trap 'rm -rf "$tmp" "$keys"' EXIT
+  while IFS= read -r -d '' f; do
+    # sops picks the format from the extension, so keep the file's name.
+    { mkdir -p "$tmp/$(dirname "$f")" && git show ":$f" > "$tmp/$f"; } \
+      || die "cannot read $f from the git index"
+    check_vault "$tmp/$f" "$f"
+  done < <(git ls-files -z --full-name -- '*.enc.*')
+
+  while IFS= read -r -d '' f; do
+    case "$(basename "$f")" in
+      *.enc.*|*.example|*.sample|*.template|*.dist) ;;
+      .env|.env.*|*.env) check_problem "$f: looks like a plaintext dotenv (put it in a vault with: sudsy edit <env>)" ;;
+    esac
+  done < <(git ls-files -z)
+
+  # -a also searches blobs git (or .gitattributes) treats as binary; -l prints only names.
+  # git grep exits 1 when nothing matches; anything above that is a real failure.
+  git grep --cached -z -a -l -E 'AGE-SECRET-KEY-(PQ-)?1[0-9A-Z]{58}' -- . > "$keys" || rc=$?
+  [ "$rc" -le 1 ] || die "git grep failed while looking for private keys"
+  [ -f "$keys" ] && [ -r "$keys" ] || die "cannot read the private-key scan results"
+  while IFS= read -r -d '' f; do
+    check_problem "$f: contains an age private key"
+  done < "$keys"
+  rm -rf "$tmp" "$keys"; trap - EXIT
+
+  [ "$problems" -eq 0 ] || die "$problems problem(s) found"
+  say "Squeaky clean: vaults are encrypted, and no plaintext .env or private key is in git."
+}
+
 cmd_ls() {
   local f
   for f in *.enc.env; do [ -f "$f" ] && echo "${f%.enc.env}"; done
@@ -263,6 +323,7 @@ case "$sub" in
   get) cmd_get "$@" ;;
   sync) cmd_sync "$@" ;;
   ls) cmd_ls ;;
+  check) cmd_check "$@" ;;
   version|-v|--version) echo "sudsy $VERSION" ;;
   help|-h|--help) usage ;;
   *) die "unknown command: $sub (try: sudsy help)" ;;

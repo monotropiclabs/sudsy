@@ -145,16 +145,24 @@ write_vault alice dev $'A=1\n'
 check sh -c "! HOME='$TMP/home/alice' '$SUDSY' sync --force 2>/dev/null"
 
 # Run sudsy as <who> with a pseudo-terminal on stdin, answering sops's prompt with <answer>.
-# The answer waits a moment: BSD script passes input on at once, and typing that arrives
-# before sops asks is lost. util-linux and BSD script take their arguments differently.
+# BSD script passes input on at once, typing that arrives before sops asks is lost, and it
+# sends ^D as soon as its input ends. So no fixed sleep: watch the output for the prompt,
+# type the answer then, and keep stdin open until the command exits.
+# util-linux and BSD script take their arguments differently.
 at_tty() {
   local answer="$1" who="$2"; shift 2
-  local cmd="HOME='$TMP/home/$who' '$SUDSY' $*"
-  if script --version >/dev/null 2>&1; then
-    { sleep 1; printf '%s\n' "$answer"; } | script -qec "$cmd" /dev/null
-  else
-    { sleep 1; printf '%s\n' "$answer"; } | script -q /dev/null sh -c "$cmd"
-  fi
+  local cmd="HOME='$TMP/home/$who' '$SUDSY' $*" log="$TMP/tty.log" done="$TMP/tty.done"
+  rm -f "$done"; : > "$log"
+  {
+    local i=0
+    while ! grep -q '(y/n)' "$log" && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+    printf '%s\n' "$answer"
+    while [ ! -e "$done" ]; do sleep 0.1; done
+  } | {
+    if script --version >/dev/null 2>&1; then script -qec "$cmd" /dev/null
+    else script -q /dev/null sh -c "$cmd"; fi
+    touch "$done"
+  } | tee "$log"
 }
 
 fresh "sync at a terminal shows the new key and re-encrypts on yes"
@@ -175,6 +183,76 @@ out="$(at_tty n alice sync 2>&1)"
 check sh -c "printf '%s' \"\$1\" | grep -q 'left unchanged'" _ "$out"
 current="the declined vault is untouched"
 eq "$(cat dev.enc.env)" "$before"
+
+# check looks at what git would commit, so these tests stage files and use no key at all.
+repo_with_vault() { git init -q; as alice init >/dev/null; write_vault alice dev $'A=1\n'; git add .sops.yaml dev.enc.env; }
+check_fails_with() {
+  local err; err="$(HOME="$TMP/home/nobody" "$SUDSY" check 2>&1 >/dev/null)" && return 1
+  printf '%s' "$err" | grep -qF "$1"
+}
+
+fresh "check passes on an encrypted vault, with no key"
+repo_with_vault
+check env HOME="$TMP/home/nobody" "$SUDSY" check
+
+fresh "check fails on a plaintext file named like a vault"
+repo_with_vault
+printf 'A=1\n' > prod.enc.env; git add prod.enc.env
+check check_fails_with "prod.enc.env: not encrypted"
+
+fresh "check fails on a staged plaintext .env, even once deleted from disk"
+repo_with_vault
+printf 'A=1\n' > .env; git add .env; rm .env
+check check_fails_with ".env: looks like a plaintext dotenv"
+
+fresh "check allows .env.example"
+repo_with_vault
+printf 'A=\n' > .env.example; git add .env.example
+check env HOME="$TMP/home/nobody" "$SUDSY" check
+
+fresh "check fails on a staged age private key, without printing it"
+repo_with_vault
+mkdir -p config; cp "$TMP/home/alice/.config/sops/age/keys.txt" config/key.txt; git add config/key.txt
+out="$(HOME="$TMP/home/nobody" "$SUDSY" check 2>&1)"
+check sh -c "printf '%s' \"\$1\" | grep -qF 'config/key.txt: contains an age private key'" _ "$out"
+current="check does not print the private key"
+check sh -c "! printf '%s' \"\$1\" | grep -q AGE-SECRET-KEY" _ "$out"
+
+fresh "check ignores unstaged changes"
+repo_with_vault
+printf 'A=1\n' > dev.enc.env
+check env HOME="$TMP/home/nobody" "$SUDSY" check
+
+fresh "check still finds a private key when a vault lives under keys/"
+repo_with_vault
+mkdir -p keys; cp dev.enc.env keys/dev.enc.env; git add keys/dev.enc.env
+cp "$TMP/home/alice/.config/sops/age/keys.txt" leaked.txt; git add leaked.txt
+check check_fails_with "leaked.txt: contains an age private key"
+
+fresh "check from a subdirectory reads the nested vault, not the root one"
+repo_with_vault
+mkdir -p apps/service; printf 'A=1\n' > apps/service/dev.enc.env; git add apps/service/dev.enc.env
+check sh -c "cd apps/service && HOME='$TMP/home/nobody' '$SUDSY' check 2>&1 | grep -qF 'apps/service/dev.enc.env: not encrypted'"
+
+fresh "check from a subdirectory still scans the whole repo for keys"
+repo_with_vault
+mkdir -p sub; cp "$TMP/home/alice/.config/sops/age/keys.txt" leaked.txt; git add leaked.txt
+check sh -c "cd sub && HOME='$TMP/home/nobody' '$SUDSY' check 2>&1 | grep -qF 'leaked.txt: contains an age private key'"
+
+fresh "check finds a private key in a file git treats as binary"
+repo_with_vault
+{ printf 'bin\0'; cat "$TMP/home/alice/.config/sops/age/keys.txt"; } > blob.dat
+cp "$TMP/home/alice/.config/sops/age/keys.txt" secret-copy.txt
+git add blob.dat secret-copy.txt
+printf 'secret-copy.txt -diff\n' > .gitattributes
+out="$(HOME="$TMP/home/nobody" "$SUDSY" check 2>&1)"
+check sh -c "printf '%s' \"\$1\" | grep -qF 'blob.dat: contains an age private key'" _ "$out"
+current="check finds a key in a file marked -diff by an unstaged .gitattributes"
+check sh -c "printf '%s' \"\$1\" | grep -qF 'secret-copy.txt: contains an age private key'" _ "$out"
+
+fresh "check outside git still checks the vaults on disk"
+as alice init >/dev/null; write_vault alice dev $'A=1\n'; printf 'A=1\n' > prod.enc.env
+check sh -c "! GIT_CEILING_DIRECTORIES='$TMP' HOME='$TMP/home/nobody' '$SUDSY' check 2>/dev/null"
 
 fresh "./secret.txt wins over the global key"
 as alice init >/dev/null
