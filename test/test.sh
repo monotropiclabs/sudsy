@@ -215,6 +215,33 @@ repo_with_vault
 printf 'A=1\n' > dev.enc.env
 check env HOME="$TMP/home/nobody" "$SUDSY" check
 
+fresh "check still finds a private key when a vault lives under keys/"
+repo_with_vault
+mkdir -p keys; cp dev.enc.env keys/dev.enc.env; git add keys/dev.enc.env
+cp "$TMP/home/alice/.config/sops/age/keys.txt" leaked.txt; git add leaked.txt
+check check_fails_with "leaked.txt: contains an age private key"
+
+fresh "check from a subdirectory reads the nested vault, not the root one"
+repo_with_vault
+mkdir -p apps/service; printf 'A=1\n' > apps/service/dev.enc.env; git add apps/service/dev.enc.env
+check sh -c "cd apps/service && HOME='$TMP/home/nobody' '$SUDSY' check 2>&1 | grep -qF 'apps/service/dev.enc.env: not encrypted'"
+
+fresh "check from a subdirectory still scans the whole repo for keys"
+repo_with_vault
+mkdir -p sub; cp "$TMP/home/alice/.config/sops/age/keys.txt" leaked.txt; git add leaked.txt
+check sh -c "cd sub && HOME='$TMP/home/nobody' '$SUDSY' check 2>&1 | grep -qF 'leaked.txt: contains an age private key'"
+
+fresh "check finds a private key in a file git treats as binary"
+repo_with_vault
+{ printf 'bin\0'; cat "$TMP/home/alice/.config/sops/age/keys.txt"; } > blob.dat
+cp "$TMP/home/alice/.config/sops/age/keys.txt" secret-copy.txt
+git add blob.dat secret-copy.txt
+printf 'secret-copy.txt -diff\n' > .gitattributes
+out="$(HOME="$TMP/home/nobody" "$SUDSY" check 2>&1)"
+check sh -c "printf '%s' \"\$1\" | grep -qF 'blob.dat: contains an age private key'" _ "$out"
+current="check finds a key in a file marked -diff by an unstaged .gitattributes"
+check sh -c "printf '%s' \"\$1\" | grep -qF 'secret-copy.txt: contains an age private key'" _ "$out"
+
 fresh "check outside git still checks the vaults on disk"
 as alice init >/dev/null; write_vault alice dev $'A=1\n'; printf 'A=1\n' > prod.enc.env
 check sh -c "! GIT_CEILING_DIRECTORIES='$TMP' HOME='$TMP/home/nobody' '$SUDSY' check 2>/dev/null"
