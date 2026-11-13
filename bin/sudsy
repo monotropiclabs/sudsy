@@ -25,9 +25,12 @@ Usage: sudsy <command> [args]
   cat <env>              print the decrypted dotenv
   json <env>             print the decrypted secrets as a JSON object
   get <env> <KEY>        print a single value
+  grant <env> <pubkey>   let one more key read just <env> (then run: sudsy sync)
   sync [--yes]           re-encrypt every vault for the recipients in .sops.yaml,
                          showing each change in readers first (--yes skips the review)
   ls                     list this project's environments
+  check                  fail if a vault is not encrypted, or git is about to commit a
+                         plaintext .env or an age private key (for pre-commit and CI)
   version                print the sudsy version
 
 Your private key is read from $SOPS_AGE_KEY_FILE, else the output of
@@ -146,6 +149,61 @@ strip_yaml_comments() {
   awk '{ if ($0 ~ /^[ \t]*#/) $0 = ""; else if (match($0, /[ \t]#/)) $0 = substr($0, 1, RSTART - 1); print }' "$1"
 }
 
+# .sops.yaml is edited only in the shape sudsy writes: list items starting "- path_regex: ...",
+# each with an "age: >-" list of recipients, one per line. sops uses the first rule whose
+# path_regex matches, so init's catch-all comes last and grant puts each env's rule before it.
+CATCH_ALL='\.enc\.'
+# Anchored to the whole vault name: env "dev" must not also match dev.enc.prod.enc.env.
+env_regex() { printf '(^|/)%s\\.enc\\.env$' "$1"; }
+
+# Values reach awk through ENVIRON: awk -v would turn the regex's \. into a plain dot.
+# Line number of the rule whose path_regex is exactly $1, or nothing.
+rule_line() {
+  R="$1" awk 'BEGIN { r = ENVIRON["R"] } { l = $0; if (sub(/^[ \t]*-[ \t]*path_regex:[ \t]*/, "", l)) { sub(/[ \t]+$/, "", l); if (l == r) { print NR; exit } } }' "$CONFIG"
+}
+# The recipients of the rule starting at line $1, one "<line number> <age1...>" per line, read
+# only from its "age: >-" block, so a commented-out key is never taken for a reader. Fails if
+# the rule isn't in that one-key-per-line shape: callers then send the user to edit by hand.
+rule_age() {
+  awk -v n="$1" '
+    function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
+    NR <= n { next }
+    !inblock {
+      if ($0 ~ /^[ \t]*-[ \t]/) exit
+      if ($0 ~ /^[ \t]*age[ \t]*:/) {
+        if ($0 !~ /^[ \t]*age:[ \t]*>-[ \t]*$/) { bad = 1; exit }
+        inblock = 1; aind = indent($0)
+      }
+      next
+    }
+    /^[ \t]*$/ { next }
+    indent($0) <= aind { exit }
+    {
+      l = $0; sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l); sub(/,$/, "", l)
+      if (l !~ /^age1[0-9a-z]+$/) { bad = 1; exit }
+      print NR, l; found = 1
+    }
+    END { if (bad || !found) exit 1 }' "$CONFIG"
+}
+
+# Add recipient $2 after line $1: on a new line with the same indent in an "age: >-" list, or
+# on the same line for an inline "age: age1...,age1...". A trailing comment stays after the
+# recipients, so the comma goes before it.
+append_recipient() {
+  local tmp; tmp="$(mktemp)"
+  awk -v n="$1" -v k="$2" '
+    NR == n {
+      code = $0; note = ""
+      if (match($0, /[ \t]#/)) { code = substr($0, 1, RSTART - 1); note = substr($0, RSTART) }
+      sub(/[ \t,]*$/, "", code)
+      if (code ~ /age:[ \t]*[^ \t>|]/) { print code "," k note; next }
+      match(code, /^[ \t]*/); ind = substr(code, 1, RLENGTH)
+      print code "," note; print ind k; next
+    }
+    { print }' "$CONFIG" > "$tmp"
+  cat "$tmp" > "$CONFIG" && rm -f "$tmp"
+}
+
 cmd_init() {
   need age-keygen
   local key=""
@@ -176,25 +234,14 @@ cmd_init() {
       if printf '%s\n' "$live" | grep -qF "$p"; then say "Your key is already in $CONFIG. Squeaky clean."; return 0; fi
     done
     printf '%s\n' "$live" | grep -q 'age1' || die "no age recipients in $CONFIG; add $pub to it by hand"
-    # Append after the last age1 recipient, matching its indent: on its own line in an
-    # `age: >-` list, or on the same line for an inline `age: age1...,age1...`. A trailing
-    # comment stays after the recipients, so the comma goes before it.
-    local last tmp
-    last="$(printf '%s\n' "$live" | grep -n 'age1' | tail -n 1 | cut -d: -f1)"
-    tmp="$(mktemp)"
-    awk -v n="$last" -v k="$pub" '
-      NR == n {
-        code = $0; note = ""
-        if (match($0, /[ \t]#/)) { code = substr($0, 1, RSTART - 1); note = substr($0, RSTART) }
-        sub(/[ \t,]*$/, "", code)
-        if (code ~ /age:[ \t]*[^ \t>|]/) { print code "," k note; next }
-        match(code, /^[ \t]*/); ind = substr(code, 1, RLENGTH)
-        print code "," note; print ind k; next
-      }
-      { print }' "$CONFIG" > "$tmp"
-    cat "$tmp" > "$CONFIG" && rm -f "$tmp"
+    # Append after the last real age1 recipient, which is in the catch-all rule.
+    append_recipient "$(printf '%s\n' "$live" | grep -n 'age1' | tail -n 1 | cut -d: -f1)" "$pub"
     say "Added your key to $CONFIG."
     echo "   Commit it, then ask someone who already has access to run: sudsy sync"
+    if [ "$(printf '%s\n' "$live" | grep -c 'path_regex:')" -gt 1 ]; then
+      echo "   $CONFIG has more than one rule, and you're only in the last. For each environment"
+      echo "   with its own rule, someone runs: sudsy grant <env> $pub"
+    fi
   fi
 
   # Ask git rather than look for a .git dir: in a worktree or a subdirectory .git is a file or
@@ -239,6 +286,41 @@ cmd_cat() {
   s -d "$@" "$f"
 }
 
+cmd_grant() {
+  [ $# -eq 2 ] || die "usage: sudsy grant <env> <pubkey>"
+  local env k n r age recipients block tmp
+  env="$(basename "$1" .enc.env)"; k="$2"
+  case "$env" in ""|*[!A-Za-z0-9_-]*) die "grant needs an env name of letters, digits, - and _: $env" ;; esac
+  case "$k" in age1*) ;; *) die "not an age public key: $k" ;; esac
+  # Spelled out: in some locales a range like a-z also matches capitals.
+  case "${k#age1}" in ""|*[!0123456789abcdefghijklmnopqrstuvwxyz]*) die "not an age public key: $k" ;; esac
+  [ -f "$CONFIG" ] || die "no $CONFIG here (run: sudsy init)"
+
+  n="$(rule_line "$(env_regex "$env")")"
+  if [ -n "$n" ]; then
+    age="$(rule_age "$n")" || die "$env's rule in $CONFIG isn't in the one-key-per-line \"age: >-\" shape sudsy writes; edit $CONFIG by hand"
+    if echo "$age" | cut -d' ' -f2 | grep -qxF "$k"; then say "$k can already read $env."; return 0; fi
+    append_recipient "$(echo "$age" | tail -n 1 | cut -d' ' -f1)" "$k"
+  else
+    n="$(rule_line "$CATCH_ALL")"
+    [ -n "$n" ] || die "grant needs the catch-all rule (path_regex: $CATCH_ALL) that sudsy init writes; edit $CONFIG by hand"
+    age="$(rule_age "$n")" || die "the catch-all rule in $CONFIG isn't in the one-key-per-line \"age: >-\" shape sudsy writes; edit $CONFIG by hand"
+    # The new rule starts as a copy of the catch-all's readers, so nobody loses access to $env.
+    recipients="$( (echo "$age" | cut -d' ' -f2; echo "$k") | awk '!seen[$0]++')"
+    block="$(printf -- '- path_regex: %s\n  age: >-\n' "$(env_regex "$env")")"
+    for r in $recipients; do block="$block"$'\n'"    $r,"; done
+    block="${block%,}"
+    tmp="$(mktemp)"
+    B="$block" awk -v n="$n" '
+      BEGIN { b = ENVIRON["B"] }
+      NR == n { match($0, /^[ \t]*/); ind = substr($0, 1, RLENGTH); c = split(b, ls, "\n"); for (i = 1; i <= c; i++) print ind ls[i] }
+      { print }' "$CONFIG" > "$tmp"
+    cat "$tmp" > "$CONFIG" && rm -f "$tmp"
+  fi
+  say "$k can read $env once its vault is re-encrypted."
+  echo "   Commit $CONFIG, then run: sudsy sync"
+}
+
 # sync decides who can read every vault, and anyone who can push can add a key to .sops.yaml.
 # So sops shows each change in readers and asks first; only --yes skips that review, and with
 # no terminal to ask at, sync refuses rather than widen access unattended.
@@ -263,6 +345,64 @@ cmd_sync() {
   else say "Done. Any vault you declined is left as it was."; fi
 }
 
+# check is for a pre-commit hook or CI. It needs no key, and in a git repo it looks at the
+# index (what the next commit holds, staged changes included), not at the working copy.
+check_problem() { echo "sudsy: $*" >&2; problems=$((problems + 1)); }
+
+# check_vault <file to inspect> <name to report>
+check_vault() {
+  local status
+  # Older sops fails outright on plaintext instead of reporting "encrypted":false.
+  status="$(sops filestatus "$1" 2>/dev/null)" || { check_problem "$2: not encrypted (sops cannot read it as a vault)"; return 0; }
+  case "$status" in *'"encrypted":true'*) ;; *) check_problem "$2: not encrypted" ;; esac
+}
+
+cmd_check() {
+  [ $# -eq 0 ] || die "usage: sudsy check"
+  need sops
+  local problems=0 f tmp keys rc=0
+  if ! command -v git >/dev/null 2>&1 || ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    for f in *.enc.*; do [ -f "$f" ] && check_vault "$f" "$f"; done
+    [ "$problems" -eq 0 ] || die "$problems problem(s) found"
+    say "Vaults are encrypted. (Not a git repo, so nothing else to check.)"
+    return 0
+  fi
+
+  # Work from the top of the repo so ls-files, show :path and grep all use root-relative
+  # paths, and the whole index is checked even when run from a subdirectory.
+  cd "$(git rev-parse --show-toplevel)" || die "cannot find the top of the git repo"
+  # The vault copies and the key-scan results live in separate temp locations, so a vault
+  # path (say keys/dev.enc.env) can never collide with the results file.
+  tmp="$(mktemp -d)" && keys="$(mktemp)" || die "cannot create a temp file"
+  trap 'rm -rf "$tmp" "$keys"' EXIT
+  while IFS= read -r -d '' f; do
+    # sops picks the format from the extension, so keep the file's name.
+    { mkdir -p "$tmp/$(dirname "$f")" && git show ":$f" > "$tmp/$f"; } \
+      || die "cannot read $f from the git index"
+    check_vault "$tmp/$f" "$f"
+  done < <(git ls-files -z --full-name -- '*.enc.*')
+
+  while IFS= read -r -d '' f; do
+    case "$(basename "$f")" in
+      *.enc.*|*.example|*.sample|*.template|*.dist) ;;
+      .env|.env.*|*.env) check_problem "$f: looks like a plaintext dotenv (put it in a vault with: sudsy edit <env>)" ;;
+    esac
+  done < <(git ls-files -z)
+
+  # -a also searches blobs git (or .gitattributes) treats as binary; -l prints only names.
+  # git grep exits 1 when nothing matches; anything above that is a real failure.
+  git grep --cached -z -a -l -E 'AGE-SECRET-KEY-(PQ-)?1[0-9A-Z]{58}' -- . > "$keys" || rc=$?
+  [ "$rc" -le 1 ] || die "git grep failed while looking for private keys"
+  [ -f "$keys" ] && [ -r "$keys" ] || die "cannot read the private-key scan results"
+  while IFS= read -r -d '' f; do
+    check_problem "$f: contains an age private key"
+  done < "$keys"
+  rm -rf "$tmp" "$keys"; trap - EXIT
+
+  [ "$problems" -eq 0 ] || die "$problems problem(s) found"
+  say "Squeaky clean: vaults are encrypted, and no plaintext .env or private key is in git."
+}
+
 cmd_ls() {
   local f
   for f in *.enc.env; do [ -f "$f" ] && echo "${f%.enc.env}"; done
@@ -279,8 +419,10 @@ case "$sub" in
   cat) cmd_cat "${1:-}" ;;
   json) cmd_cat "${1:-}" --output-type json ;;
   get) cmd_get "$@" ;;
+  grant) cmd_grant "$@" ;;
   sync) cmd_sync "$@" ;;
   ls) cmd_ls ;;
+  check) cmd_check "$@" ;;
   version|-v|--version) echo "sudsy $VERSION" ;;
   help|-h|--help) usage ;;
   *) die "unknown command: $sub (try: sudsy help)" ;;
