@@ -220,6 +220,31 @@ out="$(at_tty n alice revoke "$(as bob key)" 2>&1)"
 check sh -c "printf '%s' \"\$1\" | grep -q 'still readable'" _ "$out"
 current="bob can still read the declined vault"
 eq "$(as bob cat dev)" $'A=1\nB=two'
+current="the declined revoke says to rerun revoke, not sync"
+check sh -c "printf '%s' \"\$1\" | grep -qF 'run: sudsy revoke'" _ "$out"
+current="rerunning revoke finishes it: bob is out and the vault has a new data key"
+before_a="$(grep '^A=' dev.enc.env)"
+out="$(as alice revoke --yes "$(as bob key)" 2>&1)"
+check sh -c "! HOME='$TMP/home/bob' '$SUDSY' cat dev >/dev/null 2>&1 && test \"\$(grep '^A=' dev.enc.env)\" != '$before_a'"
+current="the finished revoke lists the secrets to rotate"
+check sh -c "printf '%s' \"\$1\" | grep -qF 'dev.enc.env: A B'" _ "$out"
+
+fresh "revoke refuses your own key when it comes from SOPS_AGE_KEY, and changes nothing"
+two_readers
+mv "$TMP/home/alice/.config/sops/age/keys.txt" "$TMP/alice.key"
+before="$(cat .sops.yaml)"
+check sh -c "SOPS_AGE_KEY=\"\$(cat '$TMP/alice.key')\" HOME='$TMP/home/alice' '$SUDSY' revoke --yes \"\$(age-keygen -y '$TMP/alice.key')\" 2>&1 | grep -q 'your own key'"
+current="the refused revoke leaves .sops.yaml alone"
+eq "$(cat .sops.yaml)" "$before"
+
+fresh "revoke does not count a commented-out key as a reader"
+as alice init >/dev/null; write_vault alice dev $'A=1\n'
+as bob init >/dev/null
+printf 'creation_rules:\n  - path_regex: \\.enc\\.\n    # age: %s\n    age: >-\n      %s\n' "$(as alice key)" "$(as bob key)" > .sops.yaml
+before="$(cat .sops.yaml)"
+check sh -c "HOME='$TMP/home/alice' '$SUDSY' revoke --yes '$(as bob key)' 2>&1 | grep -q 'no readers'"
+current="the refused revoke leaves .sops.yaml alone"
+eq "$(cat .sops.yaml)" "$before"
 
 fresh "./secret.txt wins over the global key"
 as alice init >/dev/null

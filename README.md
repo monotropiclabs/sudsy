@@ -146,6 +146,8 @@ sudsy revoke age1their...   # then commit .sops.yaml and the vaults
 `revoke` takes their key out of every rule, re-encrypts each vault they could read (reviewed
 like `sync`), and gives those vaults a new data key with `sops rotate`, so a data key they kept
 no longer opens them. It won't revoke your own key, or leave a rule with nobody able to read it.
+If you decline a vault, run the same `revoke` again later to finish it: the key is already out
+of `.sops.yaml`, and the rerun updates and rotates the vaults that still list it.
 
 It ends with the names of every secret they could read. They can still read old versions from
 git history, so **rotate each of those at its source**: a new API key, a new password. No

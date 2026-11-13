@@ -216,7 +216,21 @@ config_without() {
 
 # One line per creation rule that has age recipients: "<rule number> <recipient count>".
 age_counts() {
-  awk '/^[ \t]*-[ \t]/ { r++ } r { c[r] += gsub(/age1[0-9a-z]+/, "&") } END { for (i = 1; i <= r; i++) if (c[i]) print i, c[i] }' "$1"
+  uncommented "$1" | awk '/^[ \t]*-[ \t]/ { r++ } r { c[r] += gsub(/age1[0-9a-z]+/, "&") } END { for (i = 1; i <= r; i++) if (c[i]) print i, c[i] }'
+}
+
+# $1 without YAML comments, so a commented-out key never counts as a reader.
+uncommented() {
+  sed 's/#.*//' "$1"
+}
+
+# The public key of every identity sops will use: the key file, SOPS_AGE_KEY, SOPS_AGE_KEY_CMD.
+own_keys() {
+  local f; f="$(key_file)"
+  if [ -f "$f" ]; then age-keygen -y "$f" 2>/dev/null; fi
+  if [ -n "${SOPS_AGE_KEY:-}" ]; then printf '%s\n' "$SOPS_AGE_KEY" | age-keygen -y 2>/dev/null; fi
+  if [ -n "${SOPS_AGE_KEY_CMD:-}" ]; then sh -c "$SOPS_AGE_KEY_CMD" 2>/dev/null | age-keygen -y 2>/dev/null; fi
+  return 0
 }
 
 cmd_revoke() {
@@ -232,26 +246,32 @@ cmd_revoke() {
   case "$k" in age1*) ;; *) die "not an age public key: $k" ;; esac
   case "${k#age1}" in ""|*[!0123456789abcdefghijklmnopqrstuvwxyz]*) die "not an age public key: $k" ;; esac
   [ -f "$CONFIG" ] || die "no $CONFIG here"
-  grep -qF "$k" "$CONFIG" || die "$k is not in $CONFIG"
   # Re-encrypting without your own key would leave you unable to rotate the vaults.
-  if [ -f "$(key_file)" ] && age-keygen -y "$(key_file)" 2>/dev/null | grep -qxF "$k"; then
+  if own_keys | grep -qxF "$k"; then
     die "$k is your own key; ask someone else who can read the vaults to revoke it"
   fi
-  need_review_or_yes "$yes"
   # sops keeps each vault's recipients in the clear, so grep tells which ones $k can read.
   for f in *.enc.*; do
     if [ -f "$f" ] && grep -qF "$k" "$f"; then had="$had $f"; fi
   done
-
-  tmp="$(mktemp)"
-  config_without "$k" > "$tmp"
-  # Every rule that had age readers must keep at least one, or sops could not encrypt for it.
-  while read -r r before; do
-    after="$(age_counts "$tmp" | awk -v r="$r" '$1 == r { print $2 }')"
-    [ -n "$after" ] || { rm -f "$tmp"; die "revoking $k would leave rule $r in $CONFIG with no readers; add another key first"; }
-  done < <(age_counts "$CONFIG")
-  cat "$tmp" > "$CONFIG" && rm -f "$tmp"
-  say "Removed $k from $CONFIG."
+  if uncommented "$CONFIG" | grep -qF "$k"; then
+    need_review_or_yes "$yes"
+    tmp="$(mktemp)"
+    config_without "$k" > "$tmp"
+    # Every rule that had age readers must keep at least one, or sops could not encrypt for it.
+    while read -r r before; do
+      after="$(age_counts "$tmp" | awk -v r="$r" '$1 == r { print $2 }')"
+      [ -n "$after" ] || { rm -f "$tmp"; die "revoking $k would leave rule $r in $CONFIG with no readers; add another key first"; }
+    done < <(age_counts "$CONFIG")
+    cat "$tmp" > "$CONFIG" && rm -f "$tmp"
+    say "Removed $k from $CONFIG."
+  elif [ -n "$had" ]; then
+    # An earlier revoke was declined for some vaults: finish it, new data keys included.
+    need_review_or_yes "$yes"
+    say "$k is already gone from $CONFIG; finishing the revoke for:$had"
+  else
+    die "$k is not in $CONFIG"
+  fi
 
   update_vaults "$yes"
   [ -n "$had" ] || { say "No vault was readable with $k, so there is nothing to rotate."; return 0; }
@@ -273,7 +293,7 @@ cmd_revoke() {
     esac
   done
   echo "   Old versions stay readable in git history, which is why the values themselves must change."
-  [ -z "$kept" ] || die "still readable with $k:$kept (you declined the update). Run: sudsy sync"
+  [ -z "$kept" ] || die "still readable with $k:$kept (you declined the update). To finish, run: sudsy revoke $k"
 }
 
 cmd_ls() {
