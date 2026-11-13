@@ -285,7 +285,10 @@ own_keys() {
   local f; f="$(key_file)"
   if [ -f "$f" ]; then age-keygen -y "$f" 2>/dev/null; fi
   if [ -n "${SOPS_AGE_KEY:-}" ]; then printf '%s\n' "$SOPS_AGE_KEY" | age-keygen -y 2>/dev/null; fi
-  if [ -n "${SOPS_AGE_KEY_CMD:-}" ]; then sh -c "$SOPS_AGE_KEY_CMD" 2>/dev/null | age-keygen -y 2>/dev/null; fi
+  # Split like sops does (see split_words), not through a shell, so this finds the same key.
+  if [ -n "${SOPS_AGE_KEY_CMD:-}" ] && split_words "$SOPS_AGE_KEY_CMD" && [ "${#KEY_CMD_WORDS[@]}" -gt 0 ]; then
+    "${KEY_CMD_WORDS[@]}" 2>/dev/null | age-keygen -y 2>/dev/null
+  fi
   return 0
 }
 

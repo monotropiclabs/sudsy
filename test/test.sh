@@ -237,6 +237,15 @@ check sh -c "SOPS_AGE_KEY=\"\$(cat '$TMP/alice.key')\" HOME='$TMP/home/alice' '$
 current="the refused revoke leaves .sops.yaml alone"
 eq "$(cat .sops.yaml)" "$before"
 
+fresh "revoke refuses your own key from SOPS_AGE_KEY_CMD, split the way sops splits it"
+two_readers
+# Unquoted $NOPE: sops passes it through literally, a shell would expand it to nothing.
+mv "$TMP/home/alice/.config/sops/age/keys.txt" "$TMP/\$NOPE.key"
+before="$(cat .sops.yaml)"
+check sh -c "SOPS_AGE_KEY_CMD='cat $TMP/\$NOPE.key' HOME='$TMP/home/alice' '$SUDSY' revoke --yes \"\$(age-keygen -y '$TMP/\$NOPE.key')\" 2>&1 | grep -q 'your own key'"
+current="the refused revoke leaves .sops.yaml alone"
+eq "$(cat .sops.yaml)" "$before"
+
 fresh "revoke does not count a commented-out key as a reader"
 as alice init >/dev/null; write_vault alice dev $'A=1\n'
 as bob init >/dev/null
