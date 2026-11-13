@@ -69,12 +69,48 @@ s() {
   fi
 }
 
+# Split $1 into KEY_CMD_WORDS exactly as sops splits $SOPS_AGE_KEY_CMD (Go's shlex): blanks
+# separate words, '...' is literal, a backslash makes the next character literal both bare
+# and inside "...", and # at the start of a word comments out the rest of the line. Nothing
+# is expanded and no shell is involved. Fails on an unterminated quote or a trailing \.
+split_words() {
+  local s="$1" i=0 n=${#1} c word="" inword=0 q="" sq="'" dq='"' bs='\'
+  KEY_CMD_WORDS=()
+  while [ "$i" -lt "$n" ]; do
+    c="${s:$i:1}"; i=$((i + 1))
+    if [ "$q" = "$sq" ]; then
+      if [ "$c" = "$sq" ]; then q=""; else word="$word$c"; fi
+    elif [ "$q" = "$dq" ] || [ "$c" = "$bs" ]; then
+      if [ "$c" = "$bs" ]; then
+        [ "$i" -lt "$n" ] || return 1
+        word="$word${s:$i:1}"; i=$((i + 1)); inword=1
+      elif [ "$c" = "$dq" ]; then q=""
+      else word="$word$c"; fi
+    else
+      case "$c" in
+        ' '|$'\t'|$'\n'|$'\r')
+          if [ "$inword" = 1 ]; then KEY_CMD_WORDS+=("$word"); word=""; inword=0; fi ;;
+        "$sq"|"$dq") q="$c"; inword=1 ;;
+        '#')
+          if [ "$inword" = 1 ]; then word="$word$c"
+          else while [ "$i" -lt "$n" ] && [ "${s:$i:1}" != $'\n' ]; do i=$((i + 1)); done; fi ;;
+        *) word="$word$c"; inword=1 ;;
+      esac
+    fi
+  done
+  [ -z "$q" ] || return 1
+  if [ "$inword" = 1 ]; then KEY_CMD_WORDS+=("$word"); fi
+  return 0
+}
+
 # Print the public key(s) for your private key. The command is split into words the way sops
 # splits it (quotes respected, no shell, so no pipes), so whatever works here works for sops.
 public_keys() {
   need age-keygen
   if use_key_cmd; then
-    printf '%s\n' "$SOPS_AGE_KEY_CMD" | xargs sh -c 'exec "$@"' sh | age-keygen -y \
+    split_words "$SOPS_AGE_KEY_CMD" && [ "${#KEY_CMD_WORDS[@]}" -gt 0 ] \
+      || die "\$SOPS_AGE_KEY_CMD is not a command sops can run (check its quotes)"
+    "${KEY_CMD_WORDS[@]}" | age-keygen -y \
       || die "\$SOPS_AGE_KEY_CMD did not print an age private key"
   else
     local key; key="$(key_file)"

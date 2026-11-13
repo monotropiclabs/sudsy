@@ -221,6 +221,29 @@ current="SOPS_AGE_KEY_CMD: the failed init writes no .sops.yaml"
 as alice init >/dev/null 2>&1
 check test ! -e .sops.yaml
 
+# sudsy splits the command the way sops does, so quoting that works for one works for both.
+fresh "SOPS_AGE_KEY_CMD: escaped quotes inside double quotes"
+(umask 077; age-keygen -o "$TMP/age \"key\".txt" 2>/dev/null)
+export SOPS_AGE_KEY_CMD="cat \"$TMP/age \\\"key\\\".txt\""
+as alice init >/dev/null
+eq "$(as alice key)" "$(age-keygen -y "$TMP/age \"key\".txt")"
+current="SOPS_AGE_KEY_CMD: sops reads the same escaped command"
+write_vault alice dev $'A=1\n'
+eq "$(as alice cat dev)" "A=1"
+
+fresh "SOPS_AGE_KEY_CMD: single quotes, with an apostrophe spliced in"
+(umask 077; age-keygen -o "$TMP/it's key.txt" 2>/dev/null)
+export SOPS_AGE_KEY_CMD="cat '$TMP/it'\"'\"'s key.txt'"
+as alice init >/dev/null
+eq "$(as alice key)" "$(age-keygen -y "$TMP/it's key.txt")"
+current="SOPS_AGE_KEY_CMD: sops reads the same single-quoted command"
+write_vault alice dev $'A=1\n'
+eq "$(as alice cat dev)" "A=1"
+
+fresh "SOPS_AGE_KEY_CMD: an unterminated quote is a clear error"
+export SOPS_AGE_KEY_CMD="cat \"$TMP/manager key.txt"
+check sh -c "HOME='$TMP/home/alice' '$SUDSY' key 2>&1 | grep -q 'check its quotes'"
+
 fresh "SOPS_AGE_KEY_FILE wins over SOPS_AGE_KEY_CMD"
 export SOPS_AGE_KEY_CMD="echo nope"
 (umask 077; age-keygen -o "$TMP/file.txt" 2>/dev/null)
