@@ -254,9 +254,27 @@ write_vault alice dev $'A=1\n'
 eq "$(as alice cat dev)" "A=1"
 
 fresh "init with ./secret.txt adds it to .gitignore"
-mkdir .git; (umask 077; age-keygen -o secret.txt 2>/dev/null)
+git init -q; (umask 077; age-keygen -o secret.txt 2>/dev/null)
 as alice init >/dev/null
 eq "$(cat .gitignore)" "secret.txt"
+
+fresh "init gitignores ./secret.txt in a git worktree"
+git init -q main
+git -C main -c user.name=t -c user.email=t@example.com commit -q --allow-empty -m init
+git -C main worktree add -q ../wt 2>/dev/null
+cd wt; (umask 077; age-keygen -o secret.txt 2>/dev/null)
+as alice init >/dev/null
+check git check-ignore -q secret.txt
+
+fresh "init leaves .gitignore alone when a pattern already covers ./secret.txt"
+git init -q; printf '*.txt\n' > .gitignore; (umask 077; age-keygen -o secret.txt 2>/dev/null)
+as alice init >/dev/null
+eq "$(cat .gitignore)" "*.txt"
+
+fresh "init outside git writes no .gitignore"
+(umask 077; age-keygen -o secret.txt 2>/dev/null)
+GIT_CEILING_DIRECTORIES="$TMP" as alice init >/dev/null
+check test ! -e .gitignore
 
 fresh "SOPS_AGE_KEY_FILE overrides everything"
 as alice init >/dev/null
@@ -269,6 +287,56 @@ as alice init >/dev/null
 write_vault alice dev $'A=1\n'
 secret="$(grep AGE-SECRET "$TMP/home/alice/.config/sops/age/keys.txt")"
 eq "$(SOPS_AGE_KEY="$secret" as ci cat dev)" "A=1"
+
+# A stand-in password manager: the key lives outside every place sudsy looks for a file.
+fresh "SOPS_AGE_KEY_CMD: init uses the command's key and writes no key file"
+(umask 077; age-keygen -o "$TMP/manager key.txt" 2>/dev/null)
+export SOPS_AGE_KEY_CMD="cat '$TMP/manager key.txt'"
+as alice init >/dev/null
+check test ! -e "$TMP/home/alice/.config/sops/age/keys.txt"
+current="SOPS_AGE_KEY_CMD: .sops.yaml gets the command's public key"
+check grep -qF "$(age-keygen -y "$TMP/manager key.txt")" .sops.yaml
+current="SOPS_AGE_KEY_CMD: key prints the same public key"
+eq "$(as alice key)" "$(age-keygen -y "$TMP/manager key.txt")"
+current="SOPS_AGE_KEY_CMD: edit and cat work with no key file"
+write_vault alice dev $'A=1\n'
+eq "$(as alice cat dev)" "A=1"
+
+fresh "SOPS_AGE_KEY_CMD: a command that prints no key is a clear error"
+export SOPS_AGE_KEY_CMD="echo nope"
+check sh -c "HOME='$TMP/home/alice' '$SUDSY' key 2>&1 | grep -q 'SOPS_AGE_KEY_CMD did not print'"
+current="SOPS_AGE_KEY_CMD: the failed init writes no .sops.yaml"
+as alice init >/dev/null 2>&1
+check test ! -e .sops.yaml
+
+# sudsy splits the command the way sops does, so quoting that works for one works for both.
+fresh "SOPS_AGE_KEY_CMD: escaped quotes inside double quotes"
+(umask 077; age-keygen -o "$TMP/age \"key\".txt" 2>/dev/null)
+export SOPS_AGE_KEY_CMD="cat \"$TMP/age \\\"key\\\".txt\""
+as alice init >/dev/null
+eq "$(as alice key)" "$(age-keygen -y "$TMP/age \"key\".txt")"
+current="SOPS_AGE_KEY_CMD: sops reads the same escaped command"
+write_vault alice dev $'A=1\n'
+eq "$(as alice cat dev)" "A=1"
+
+fresh "SOPS_AGE_KEY_CMD: single quotes, with an apostrophe spliced in"
+(umask 077; age-keygen -o "$TMP/it's key.txt" 2>/dev/null)
+export SOPS_AGE_KEY_CMD="cat '$TMP/it'\"'\"'s key.txt'"
+as alice init >/dev/null
+eq "$(as alice key)" "$(age-keygen -y "$TMP/it's key.txt")"
+current="SOPS_AGE_KEY_CMD: sops reads the same single-quoted command"
+write_vault alice dev $'A=1\n'
+eq "$(as alice cat dev)" "A=1"
+
+fresh "SOPS_AGE_KEY_CMD: an unterminated quote is a clear error"
+export SOPS_AGE_KEY_CMD="cat \"$TMP/manager key.txt"
+check sh -c "HOME='$TMP/home/alice' '$SUDSY' key 2>&1 | grep -q 'check its quotes'"
+
+fresh "SOPS_AGE_KEY_FILE wins over SOPS_AGE_KEY_CMD"
+export SOPS_AGE_KEY_CMD="echo nope"
+(umask 077; age-keygen -o "$TMP/file.txt" 2>/dev/null)
+eq "$(SOPS_AGE_KEY_FILE="$TMP/file.txt" as alice key)" "$(age-keygen -y "$TMP/file.txt")"
+unset SOPS_AGE_KEY_CMD
 
 fresh "no key at all is a friendly error"
 as alice init >/dev/null
