@@ -96,6 +96,7 @@ example_multiline=foo\nbar\nbaz
 | `sudsy cat <env>` | Prints the decrypted dotenv. |
 | `sudsy json <env>` | Prints the secrets as one JSON object, handy from scripts. |
 | `sudsy get <env> <KEY>` | Prints a single value. |
+| `sudsy grant <env> <pubkey>` | Lets one more key read just `<env>`'s vault, by giving that environment its own rule in `.sops.yaml`. Then run `sudsy sync`. |
 | `sudsy sync [--yes]` | Re-encrypts every vault for whoever is listed in `.sops.yaml` now. Shows which keys each vault gains or loses and asks first; `--yes` skips the question, for scripts. |
 | `sudsy ls` | Lists the environments in this project. |
 | `sudsy check` | Fails if a vault isn't encrypted, or git is about to commit a plaintext `.env` or an age private key. Needs no key, so it fits a pre-commit hook or CI. |
@@ -138,6 +139,19 @@ git pull && sudsy sync && git commit -am "Re-encrypt vaults" && git push
 list: anyone who can push to the repo can add a key to `.sops.yaml`, and saying yes lets that
 key read everything. Check each new key with its owner before you agree. Outside a terminal,
 `sync` refuses unless you pass `--yes`, so a script can't widen access without someone deciding to.
+
+**Just one environment** (a CI key, a contractor, a staging box). Rather than adding the key
+for everything, give it one vault:
+
+```bash
+sudsy grant dev age1ci...   # dev gets its own rule: everyone who reads it now, plus this key
+sudsy sync                  # re-encrypts dev for that key; prod is untouched
+```
+
+sops uses the first rule in `.sops.yaml` that matches a vault, so `grant` puts the
+environment's rule before the catch-all one `init` writes. A teammate who joins later with
+`sudsy init` goes into the catch-all only, and `init` tells them which environments have their
+own rule; someone runs `sudsy grant <env> <their key>` for each.
 
 **Removing someone**: delete their line from `.sops.yaml`, run `sudsy sync`, and commit.
 They can still read old versions from git history, so **rotate anything they had access
@@ -235,7 +249,9 @@ the whole point.
 
 **Does `.sops.yaml` need to look a certain way?** `sudsy init` writes a minimal one. If you
 already have one, `init` appends your key after the last `age1…` recipient it finds. With
-several creation rules, check that it landed where you wanted.
+several creation rules, check that it landed where you wanted. `grant` only edits the shape
+sudsy writes: rules of `path_regex` plus an `age: >-` list, one key per line, with the
+`\.enc\.` catch-all last.
 
 ## Development
 
