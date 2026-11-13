@@ -32,7 +32,8 @@ Usage: sudsy <command> [args]
                          plaintext .env or an age private key (for pre-commit and CI)
   version                print the sudsy version
 
-Your private key is read from $SOPS_AGE_KEY_FILE, else ./secret.txt,
+Your private key is read from $SOPS_AGE_KEY_FILE, else the output of
+$SOPS_AGE_KEY_CMD (e.g. your password manager), else ./secret.txt,
 else ~/.config/sops/age/keys.txt (one key for all your projects).
 In CI, set SOPS_AGE_KEY to the key's contents instead.
 EOF
@@ -45,6 +46,10 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "$1 not found. Install it first (macOS: brew install sops age)"
 }
 
+# $SOPS_AGE_KEY_CMD prints the private key, so it never has to sit in a file. An explicit
+# $SOPS_AGE_KEY_FILE still wins.
+use_key_cmd() { [ -z "${SOPS_AGE_KEY_FILE:-}" ] && [ -n "${SOPS_AGE_KEY_CMD:-}" ]; }
+
 key_file() {
   if [ -n "${SOPS_AGE_KEY_FILE:-}" ]; then echo "$SOPS_AGE_KEY_FILE"
   elif [ -f secret.txt ]; then echo "secret.txt"
@@ -56,12 +61,63 @@ key_file() {
 s() {
   need sops
   local key; key="$(key_file)"
-  if [ -f "$key" ]; then SOPS_AGE_KEY_FILE="$key" sops "$@"
+  if use_key_cmd; then env -u SOPS_AGE_KEY_FILE sops "$@"
+  elif [ -f "$key" ]; then SOPS_AGE_KEY_FILE="$key" sops "$@"
   else
     if [ -z "${SOPS_AGE_KEY:-}" ] && [ -z "${SOPS_AGE_KEY_CMD:-}" ]; then
       die "no age key found at $key (run: sudsy init, or set SOPS_AGE_KEY)"
     fi
     env -u SOPS_AGE_KEY_FILE sops "$@"
+  fi
+}
+
+# Split $1 into KEY_CMD_WORDS exactly as sops splits $SOPS_AGE_KEY_CMD (Go's shlex): blanks
+# separate words, '...' is literal, a backslash makes the next character literal both bare
+# and inside "...", and # at the start of a word comments out the rest of the line. Nothing
+# is expanded and no shell is involved. Fails on an unterminated quote or a trailing \.
+split_words() {
+  local s="$1" i=0 n=${#1} c word="" inword=0 q="" sq="'" dq='"' bs='\'
+  KEY_CMD_WORDS=()
+  while [ "$i" -lt "$n" ]; do
+    c="${s:$i:1}"; i=$((i + 1))
+    if [ "$q" = "$sq" ]; then
+      if [ "$c" = "$sq" ]; then q=""; else word="$word$c"; fi
+    elif [ "$q" = "$dq" ] || [ "$c" = "$bs" ]; then
+      if [ "$c" = "$bs" ]; then
+        [ "$i" -lt "$n" ] || return 1
+        word="$word${s:$i:1}"; i=$((i + 1)); inword=1
+      elif [ "$c" = "$dq" ]; then q=""
+      else word="$word$c"; fi
+    else
+      case "$c" in
+        ' '|$'\t'|$'\n'|$'\r')
+          if [ "$inword" = 1 ]; then KEY_CMD_WORDS+=("$word"); word=""; inword=0; fi ;;
+        "$sq"|"$dq") q="$c"; inword=1 ;;
+        '#')
+          if [ "$inword" = 1 ]; then word="$word$c"
+          else while [ "$i" -lt "$n" ] && [ "${s:$i:1}" != $'\n' ]; do i=$((i + 1)); done; fi ;;
+        *) word="$word$c"; inword=1 ;;
+      esac
+    fi
+  done
+  [ -z "$q" ] || return 1
+  if [ "$inword" = 1 ]; then KEY_CMD_WORDS+=("$word"); fi
+  return 0
+}
+
+# Print the public key(s) for your private key. The command is split into words the way sops
+# splits it (quotes respected, no shell, so no pipes), so whatever works here works for sops.
+public_keys() {
+  need age-keygen
+  if use_key_cmd; then
+    split_words "$SOPS_AGE_KEY_CMD" && [ "${#KEY_CMD_WORDS[@]}" -gt 0 ] \
+      || die "\$SOPS_AGE_KEY_CMD is not a command sops can run (check its quotes)"
+    "${KEY_CMD_WORDS[@]}" | age-keygen -y \
+      || die "\$SOPS_AGE_KEY_CMD did not print an age private key"
+  else
+    local key; key="$(key_file)"
+    [ -f "$key" ] || die "no age key at $key (run: sudsy init)"
+    age-keygen -y "$key"
   fi
 }
 
@@ -88,8 +144,10 @@ shquote() {
 
 cmd_init() {
   need age-keygen
-  local key; key="$(key_file)"
-  if [ -f "$key" ]; then
+  local key=""
+  if use_key_cmd; then
+    say "Using the key from \$SOPS_AGE_KEY_CMD"
+  elif key="$(key_file)" && [ -f "$key" ]; then
     say "Using your existing key: $key"
   else
     mkdir -p "$(dirname "$key")"
@@ -99,7 +157,7 @@ cmd_init() {
 
   # A keys file can hold several identities: use the first, but accept any of them.
   local pubs pub p
-  pubs="$(age-keygen -y "$key")"
+  pubs="$(public_keys)"
   pub="$(echo "$pubs" | head -n 1)"
   echo "   Public key: $pub"
 
@@ -123,18 +181,16 @@ cmd_init() {
     echo "   Commit it, then ask someone who already has access to run: sudsy sync"
   fi
 
-  if [ "$key" = "secret.txt" ] && [ -d .git ] && ! grep -qxF 'secret.txt' .gitignore 2>/dev/null; then
+  # Ask git rather than look for a .git dir: in a worktree or a subdirectory .git is a file or
+  # not there at all, and check-ignore also sees patterns and excludes beyond ./.gitignore.
+  if [ "$key" = "secret.txt" ] && command -v git >/dev/null 2>&1 \
+    && git rev-parse --is-inside-work-tree >/dev/null 2>&1 && ! git check-ignore -q secret.txt; then
     echo "secret.txt" >> .gitignore
     say "Added secret.txt to .gitignore."
   fi
 }
 
-cmd_key() {
-  need age-keygen
-  local key; key="$(key_file)"
-  [ -f "$key" ] || die "no age key at $key (run: sudsy init)"
-  age-keygen -y "$key"
-}
+cmd_key() { public_keys; }
 
 cmd_edit() {
   local f; f="$(vault_name "${1:-}")"
