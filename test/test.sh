@@ -145,16 +145,24 @@ write_vault alice dev $'A=1\n'
 check sh -c "! HOME='$TMP/home/alice' '$SUDSY' sync --force 2>/dev/null"
 
 # Run sudsy as <who> with a pseudo-terminal on stdin, answering sops's prompt with <answer>.
-# The answer waits a moment: BSD script passes input on at once, and typing that arrives
-# before sops asks is lost. util-linux and BSD script take their arguments differently.
+# BSD script passes input on at once, typing that arrives before sops asks is lost, and it
+# sends ^D as soon as its input ends. So no fixed sleep: watch the output for the prompt,
+# type the answer then, and keep stdin open until the command exits.
+# util-linux and BSD script take their arguments differently.
 at_tty() {
   local answer="$1" who="$2"; shift 2
-  local cmd="HOME='$TMP/home/$who' '$SUDSY' $*"
-  if script --version >/dev/null 2>&1; then
-    { sleep 1; printf '%s\n' "$answer"; } | script -qec "$cmd" /dev/null
-  else
-    { sleep 1; printf '%s\n' "$answer"; } | script -q /dev/null sh -c "$cmd"
-  fi
+  local cmd="HOME='$TMP/home/$who' '$SUDSY' $*" log="$TMP/tty.log" done="$TMP/tty.done"
+  rm -f "$done"; : > "$log"
+  {
+    local i=0
+    while ! grep -q '(y/n)' "$log" && [ "$i" -lt 300 ]; do sleep 0.1; i=$((i + 1)); done
+    printf '%s\n' "$answer"
+    while [ ! -e "$done" ]; do sleep 0.1; done
+  } | {
+    if script --version >/dev/null 2>&1; then script -qec "$cmd" /dev/null
+    else script -q /dev/null sh -c "$cmd"; fi
+    touch "$done"
+  } | tee "$log"
 }
 
 fresh "sync at a terminal shows the new key and re-encrypts on yes"
