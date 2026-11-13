@@ -89,16 +89,38 @@ shquote() {
 # each with an "age: >-" list of recipients, one per line. sops uses the first rule whose
 # path_regex matches, so init's catch-all comes last and grant puts each env's rule before it.
 CATCH_ALL='\.enc\.'
-env_regex() { printf '(^|/)%s\\.enc\\.' "$1"; }
+# Anchored to the whole vault name: env "dev" must not also match dev.enc.prod.enc.env.
+env_regex() { printf '(^|/)%s\\.enc\\.env$' "$1"; }
 
 # Values reach awk through ENVIRON: awk -v would turn the regex's \. into a plain dot.
 # Line number of the rule whose path_regex is exactly $1, or nothing.
 rule_line() {
   R="$1" awk 'BEGIN { r = ENVIRON["R"] } { l = $0; if (sub(/^[ \t]*-[ \t]*path_regex:[ \t]*/, "", l)) { sub(/[ \t]+$/, "", l); if (l == r) { print NR; exit } } }' "$CONFIG"
 }
-# The age1 recipients of the rule starting at line $1, and the line its last one is on.
-rule_recipients() { awk -v n="$1" 'NR > n && /^[ \t]*-[ \t]/ { exit } NR >= n' "$CONFIG" | grep -oE 'age1[0-9a-z]+' || true; }
-rule_last_recipient_line() { awk -v n="$1" 'NR > n && /^[ \t]*-[ \t]/ { exit } NR >= n && /age1/ { last = NR } END { print last + 0 }' "$CONFIG"; }
+# The recipients of the rule starting at line $1, one "<line number> <age1...>" per line, read
+# only from its "age: >-" block, so a commented-out key is never taken for a reader. Fails if
+# the rule isn't in that one-key-per-line shape: callers then send the user to edit by hand.
+rule_age() {
+  awk -v n="$1" '
+    function indent(s) { match(s, /^[ \t]*/); return RLENGTH }
+    NR <= n { next }
+    !inblock {
+      if ($0 ~ /^[ \t]*-[ \t]/) exit
+      if ($0 ~ /^[ \t]*age[ \t]*:/) {
+        if ($0 !~ /^[ \t]*age:[ \t]*>-[ \t]*$/) { bad = 1; exit }
+        inblock = 1; aind = indent($0)
+      }
+      next
+    }
+    /^[ \t]*$/ { next }
+    indent($0) <= aind { exit }
+    {
+      l = $0; sub(/^[ \t]+/, "", l); sub(/[ \t]+$/, "", l); sub(/,$/, "", l)
+      if (l !~ /^age1[0-9a-z]+$/) { bad = 1; exit }
+      print NR, l; found = 1
+    }
+    END { if (bad || !found) exit 1 }' "$CONFIG"
+}
 
 # Add recipient $2 on a new line after line $1, matching its indent.
 append_recipient() {
@@ -190,7 +212,7 @@ cmd_cat() {
 
 cmd_grant() {
   [ $# -eq 2 ] || die "usage: sudsy grant <env> <pubkey>"
-  local env k n r recipients block tmp
+  local env k n r age recipients block tmp
   env="$(basename "$1" .enc.env)"; k="$2"
   case "$env" in ""|*[!A-Za-z0-9_-]*) die "grant needs an env name of letters, digits, - and _: $env" ;; esac
   case "$k" in age1*) ;; *) die "not an age public key: $k" ;; esac
@@ -200,13 +222,15 @@ cmd_grant() {
 
   n="$(rule_line "$(env_regex "$env")")"
   if [ -n "$n" ]; then
-    if rule_recipients "$n" | grep -qxF "$k"; then say "$k can already read $env."; return 0; fi
-    append_recipient "$(rule_last_recipient_line "$n")" "$k"
+    age="$(rule_age "$n")" || die "$env's rule in $CONFIG isn't in the one-key-per-line \"age: >-\" shape sudsy writes; edit $CONFIG by hand"
+    if echo "$age" | cut -d' ' -f2 | grep -qxF "$k"; then say "$k can already read $env."; return 0; fi
+    append_recipient "$(echo "$age" | tail -n 1 | cut -d' ' -f1)" "$k"
   else
     n="$(rule_line "$CATCH_ALL")"
     [ -n "$n" ] || die "grant needs the catch-all rule (path_regex: $CATCH_ALL) that sudsy init writes; edit $CONFIG by hand"
+    age="$(rule_age "$n")" || die "the catch-all rule in $CONFIG isn't in the one-key-per-line \"age: >-\" shape sudsy writes; edit $CONFIG by hand"
     # The new rule starts as a copy of the catch-all's readers, so nobody loses access to $env.
-    recipients="$( (rule_recipients "$n"; echo "$k") | awk '!seen[$0]++')"
+    recipients="$( (echo "$age" | cut -d' ' -f2; echo "$k") | awk '!seen[$0]++')"
     block="$(printf -- '- path_regex: %s\n  age: >-\n' "$(env_regex "$env")")"
     for r in $recipients; do block="$block"$'\n'"    $r,"; done
     block="${block%,}"
