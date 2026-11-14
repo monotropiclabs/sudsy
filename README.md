@@ -35,9 +35,21 @@ npm install --save-dev @monotropiclabs/sudsy   # per project: npm scripts find i
 npm install --global @monotropiclabs/sudsy     # or everywhere
 ```
 
-Either way, the command is just `sudsy`.
+Either way, the command is just `sudsy`. Every npm version is published from this repo's
+release workflow with a [provenance attestation](https://docs.npmjs.com/generating-provenance-statements),
+so `npm audit signatures` can check it was built from the tagged source.
 
-Not a Node project? It's one file, so just put it on your `PATH`:
+Not a Node project? It's one file, so just put it on your `PATH`. Pin a version from the
+[releases page](https://github.com/monotropiclabs/sudsy/releases) and check its checksum:
+
+```bash
+v=X.Y.Z   # the version you want
+curl -fsSLO "https://github.com/monotropiclabs/sudsy/releases/download/v$v/sudsy"
+curl -fsSLO "https://github.com/monotropiclabs/sudsy/releases/download/v$v/sudsy.sha256"
+shasum -a 256 -c sudsy.sha256 && install -m 755 sudsy ~/.local/bin/sudsy
+```
+
+Or follow `main`, unpinned:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/monotropiclabs/sudsy/main/bin/sudsy -o ~/.local/bin/sudsy
@@ -273,7 +285,17 @@ npm test   # needs sops + age on PATH
 ```
 
 To release: bump `version` in both `package.json` and `bin/sudsy` (a test keeps them in
-sync), commit, then `npm publish`.
+sync), commit, then tag and push:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+[`release.yml`](.github/workflows/release.yml) checks the tag matches both versions, runs the
+tests on Linux and macOS, publishes to npm with provenance, and creates a GitHub release with
+`sudsy` and `sudsy.sha256`. It publishes through npm trusted publishing, so there is no npm token
+to store or leak. One-time setup: on npmjs.com, under the package's settings, add a trusted
+publisher for GitHub Actions with repository `monotropiclabs/sudsy` and workflow `release.yml`.
 
 ## License
 
