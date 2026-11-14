@@ -1,6 +1,6 @@
 {
   "name": "@monotropiclabs/sudsy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Squeaky-clean secrets for any project: per-environment .env vaults on top of sops + age.",
   "bin": {
     "sudsy": "bin/sudsy"
