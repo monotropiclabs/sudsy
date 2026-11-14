@@ -98,6 +98,7 @@ example_multiline=foo\nbar\nbaz
 | `sudsy get <env> <KEY>` | Prints a single value. |
 | `sudsy grant <env> <pubkey>` | Lets one more key read just `<env>`'s vault, by giving that environment its own rule in `.sops.yaml`. Then run `sudsy sync`. |
 | `sudsy sync [--yes]` | Re-encrypts every vault for whoever is listed in `.sops.yaml` now. Shows which keys each vault gains or loses and asks first; `--yes` skips the question, for scripts. |
+| `sudsy revoke [--yes] <pubkey>` | Removes a key from `.sops.yaml`, re-encrypts every vault it could read with a new data key, and lists the secret names it could see so you can rotate them. Reviews like `sync`. |
 | `sudsy ls` | Lists the environments in this project. |
 | `sudsy check` | Fails if a vault isn't encrypted, or git is about to commit a plaintext `.env` or an age private key. Needs no key, so it fits a pre-commit hook or CI. |
 
@@ -153,9 +154,21 @@ environment's rule before the catch-all one `init` writes. A teammate who joins 
 `sudsy init` goes into the catch-all only, and `init` tells them which environments have their
 own rule; someone runs `sudsy grant <env> <their key>` for each.
 
-**Removing someone**: delete their line from `.sops.yaml`, run `sudsy sync`, and commit.
-They can still read old versions from git history, so **rotate anything they had access
-to**. No amount of soap washes that off.
+**Removing someone**:
+
+```bash
+sudsy revoke age1their...   # then commit .sops.yaml and the vaults
+```
+
+`revoke` takes their key out of every rule, re-encrypts each vault they could read (reviewed
+like `sync`), and gives those vaults a new data key with `sops rotate`, so a data key they kept
+no longer opens them. It won't revoke your own key, or leave a rule with nobody able to read it.
+If you decline a vault, run the same `revoke` again later to finish it: the key is already out
+of `.sops.yaml`, and the rerun updates and rotates the vaults that still list it.
+
+It ends with the names of every secret they could read. They can still read old versions from
+git history, so **rotate each of those at its source**: a new API key, a new password. No
+amount of soap washes that off.
 
 ## Recipes
 

@@ -28,6 +28,9 @@ Usage: sudsy <command> [args]
   grant <env> <pubkey>   let one more key read just <env> (then run: sudsy sync)
   sync [--yes]           re-encrypt every vault for the recipients in .sops.yaml,
                          showing each change in readers first (--yes skips the review)
+  revoke [--yes] <pubkey>
+                         remove a key everywhere, re-encrypt with new data keys, and
+                         list the secrets it could read (rotate those at the source)
   ls                     list this project's environments
   check                  fail if a vault is not encrypted, or git is about to commit a
                          plaintext .env or an age private key (for pre-commit and CI)
@@ -306,16 +309,25 @@ cmd_grant() {
 # sync decides who can read every vault, and anyone who can push can add a key to .sops.yaml.
 # So sops shows each change in readers and asks first; only --yes skips that review, and with
 # no terminal to ask at, sync refuses rather than widen access unattended.
+need_review_or_yes() {
+  if [ -z "$1" ] && [ ! -t 0 ]; then
+    die "this changes who can read your vaults. Run it at a terminal to review each change, or pass --yes"
+  fi
+}
+
 cmd_sync() {
-  local yes="" f found=""
+  local yes=""
   case "${1:-}" in
     "") ;;
     -y|--yes) yes=1 ;;
     *) die "usage: sudsy sync [--yes]" ;;
   esac
-  if [ -z "$yes" ] && [ ! -t 0 ]; then
-    die "sync changes who can read your vaults. Run it at a terminal to review each change, or pass --yes"
-  fi
+  need_review_or_yes "$yes"
+  update_vaults "$yes"
+}
+
+update_vaults() {
+  local yes="$1" f found=""
   for f in *.enc.*; do
     [ -f "$f" ] || continue
     found=1
@@ -325,6 +337,104 @@ cmd_sync() {
   [ -n "$found" ] || die "no *.enc.* vaults here"
   if [ -n "$yes" ]; then say "All vaults match $CONFIG."
   else say "Done. Any vault you declined is left as it was."; fi
+}
+
+# Print $CONFIG without recipient $1: its own line in an "age: >-" list, or one entry in an
+# inline "age: a,b" list. The line before a removed last entry loses its trailing comma.
+config_without() {
+  awk -v k="$1" '
+    { t = $0; gsub(/^[ \t]+|[ \t,]+$/, "", t); if (t == k) next
+      if (index($0, k)) { gsub("," k, ""); gsub(k ",?", "") }
+      out[++n] = $0 }
+    END { for (i = 1; i <= n; i++) {
+      l = out[i]
+      if (l ~ /^[ \t]*age1[0-9a-z]+,[ \t]*$/ && (i == n || out[i + 1] !~ /^[ \t]*age1/)) sub(/,[ \t]*$/, "", l)
+      print l } }' "$CONFIG"
+}
+
+# One line per creation rule that has age recipients: "<rule number> <recipient count>".
+age_counts() {
+  uncommented "$1" | awk '/^[ \t]*-[ \t]/ { r++ } r { c[r] += gsub(/age1[0-9a-z]+/, "&") } END { for (i = 1; i <= r; i++) if (c[i]) print i, c[i] }'
+}
+
+# $1 without YAML comments, so a commented-out key never counts as a reader.
+uncommented() {
+  sed 's/#.*//' "$1"
+}
+
+# The public key of every identity sops will use: the key file, SOPS_AGE_KEY, SOPS_AGE_KEY_CMD.
+own_keys() {
+  local f; f="$(key_file)"
+  if [ -f "$f" ]; then age-keygen -y "$f" 2>/dev/null; fi
+  if [ -n "${SOPS_AGE_KEY:-}" ]; then printf '%s\n' "$SOPS_AGE_KEY" | age-keygen -y 2>/dev/null; fi
+  # Split like sops does (see split_words), not through a shell, so this finds the same key.
+  if [ -n "${SOPS_AGE_KEY_CMD:-}" ] && split_words "$SOPS_AGE_KEY_CMD" && [ "${#KEY_CMD_WORDS[@]}" -gt 0 ]; then
+    "${KEY_CMD_WORDS[@]}" 2>/dev/null | age-keygen -y 2>/dev/null
+  fi
+  return 0
+}
+
+cmd_revoke() {
+  local yes="" k="" a tmp f names had="" kept="" r before after
+  for a in "$@"; do
+    case "$a" in
+      -y|--yes) yes=1 ;;
+      *) [ -z "$k" ] || die "usage: sudsy revoke [--yes] <pubkey>"; k="$a" ;;
+    esac
+  done
+  [ -n "$k" ] || die "usage: sudsy revoke [--yes] <pubkey>"
+  # Spelled out: in some locales a range like a-z also matches capitals.
+  case "$k" in age1*) ;; *) die "not an age public key: $k" ;; esac
+  case "${k#age1}" in ""|*[!0123456789abcdefghijklmnopqrstuvwxyz]*) die "not an age public key: $k" ;; esac
+  [ -f "$CONFIG" ] || die "no $CONFIG here"
+  # Re-encrypting without your own key would leave you unable to rotate the vaults.
+  if own_keys | grep -qxF "$k"; then
+    die "$k is your own key; ask someone else who can read the vaults to revoke it"
+  fi
+  # sops keeps each vault's recipients in the clear, so grep tells which ones $k can read.
+  for f in *.enc.*; do
+    if [ -f "$f" ] && grep -qF "$k" "$f"; then had="$had $f"; fi
+  done
+  if uncommented "$CONFIG" | grep -qF "$k"; then
+    need_review_or_yes "$yes"
+    tmp="$(mktemp)"
+    config_without "$k" > "$tmp"
+    # Every rule that had age readers must keep at least one, or sops could not encrypt for it.
+    while read -r r before; do
+      after="$(age_counts "$tmp" | awk -v r="$r" '$1 == r { print $2 }')"
+      [ -n "$after" ] || { rm -f "$tmp"; die "revoking $k would leave rule $r in $CONFIG with no readers; add another key first"; }
+    done < <(age_counts "$CONFIG")
+    cat "$tmp" > "$CONFIG" && rm -f "$tmp"
+    say "Removed $k from $CONFIG."
+  elif [ -n "$had" ]; then
+    # An earlier revoke was declined for some vaults: finish it, new data keys included.
+    need_review_or_yes "$yes"
+    say "$k is already gone from $CONFIG; finishing the revoke for:$had"
+  else
+    die "$k is not in $CONFIG"
+  fi
+
+  update_vaults "$yes"
+  [ -n "$had" ] || { say "No vault was readable with $k, so there is nothing to rotate."; return 0; }
+  for f in $had; do
+    if grep -qF "$k" "$f"; then kept="$kept $f"; continue; fi
+    # updatekeys re-wraps the old data key; rotate makes a new one, so a copy of the old
+    # data key no longer opens the vault.
+    s rotate -i "$f"
+    say "$f has a new data key."
+  done
+
+  echo
+  say "$k could read these. Rotate each one at its source (a new API key, a new password):"
+  for f in $had; do
+    case "$f" in
+      *.enc.env) names="$(s -d "$f" | sed -n 's/^\([^#=][^=]*\)=.*/\1/p' | tr '\n' ' ')"
+                 echo "   $f: ${names:-(empty)}" ;;
+      *) echo "   $f: everything in it" ;;
+    esac
+  done
+  echo "   Old versions stay readable in git history, which is why the values themselves must change."
+  [ -z "$kept" ] || die "still readable with $k:$kept (you declined the update). To finish, run: sudsy revoke $k"
 }
 
 # check is for a pre-commit hook or CI. It needs no key, and in a git repo it looks at the
@@ -403,6 +513,7 @@ case "$sub" in
   get) cmd_get "$@" ;;
   grant) cmd_grant "$@" ;;
   sync) cmd_sync "$@" ;;
+  revoke) cmd_revoke "$@" ;;
   ls) cmd_ls ;;
   check) cmd_check "$@" ;;
   version|-v|--version) echo "sudsy $VERSION" ;;
