@@ -4,7 +4,8 @@ name: release
 # and the full test suite has to pass first. Then:
 #   - npm gets the package through trusted publishing, so no npm token is stored anywhere and
 #     every version carries a provenance attestation linking it to this workflow run
-#   - a GitHub release gets bin/sudsy and its SHA-256, for installs that pin a version
+#   - GitHub releases get the script, its SHA-256, and the standalone installer
+#   - the Homebrew formula in this repository tracks the latest stable release
 # One-time setup on npmjs.com: package settings, Trusted Publisher, GitHub Actions, repository
 # monotropiclabs/sudsy, workflow release.yml.
 
@@ -25,6 +26,10 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           pkg="$(node -p 'require("./package.json").version')"
           bin="$(sed -n 's/^VERSION="\(.*\)"$/\1/p' bin/sudsy)"
+          if ! [[ "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::expected a stable vX.Y.Z tag"
+            exit 1
+          fi
           if [ "$tag" != "$pkg" ] || [ "$tag" != "$bin" ]; then
             echo "::error::tag $GITHUB_REF_NAME, package.json $pkg, bin/sudsy $bin: all three must match"
             exit 1
@@ -73,10 +78,77 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp bin/sudsy "$RUNNER_TEMP/sudsy"
-          (cd "$RUNNER_TEMP" && sha256sum sudsy > sudsy.sha256)
+          cp docs/install.sh "$RUNNER_TEMP/install.sh"
+          (cd "$RUNNER_TEMP" && sha256sum sudsy > sudsy.sha256 && sha256sum install.sh > install.sh.sha256)
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/sudsy" "$RUNNER_TEMP/sudsy.sha256" --clobber
+            gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/sudsy" "$RUNNER_TEMP/sudsy.sha256" "$RUNNER_TEMP/install.sh" "$RUNNER_TEMP/install.sh.sha256" --clobber
           else
-            gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/sudsy" "$RUNNER_TEMP/sudsy.sha256" \
+            gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/sudsy" "$RUNNER_TEMP/sudsy.sha256" "$RUNNER_TEMP/install.sh" "$RUNNER_TEMP/install.sh.sha256" \
               --verify-tag --title "sudsy $GITHUB_REF_NAME" --generate-notes
           fi
+
+  # Keep the tap in this repository so publishing needs no cross-repo token.
+  homebrew:
+    needs: github-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: homebrew-formula
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Update the Homebrew formula for the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          mkdir -p "$RUNNER_TEMP/formula-release"
+          gh release download "$tag" --pattern sudsy --pattern sudsy.sha256 --dir "$RUNNER_TEMP/formula-release" --clobber
+          (cd "$RUNNER_TEMP/formula-release" && sha256sum -c sudsy.sha256)
+          checksum="$(sha256sum "$RUNNER_TEMP/formula-release/sudsy" | cut -d ' ' -f 1)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # No force pushes. Rebase the small generated change onto current main
+          # if someone pushes between checkout and publication.
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            latest="$(gh release view --json tagName --jq .tagName)"
+            if [ "$latest" != "$tag" ]; then
+              echo "$tag is not the latest release; leaving the formula alone"
+              exit 0
+            fi
+            # Also avoid downgrading if an older tag is published later.
+            current="$(sed -n 's/^  version "\(.*\)"$/\1/p' Formula/sudsy.rb)"
+            version="${tag#v}"
+            if [ "$(printf '%s\n' "$current" "$version" | sort -V | tail -1)" != "$version" ]; then
+              echo "Formula already tracks a newer version"
+              exit 0
+            fi
+            python3 - "$tag" "$checksum" <<'PY'
+          import pathlib, re, sys
+          tag, checksum = sys.argv[1:]
+          assert re.fullmatch(r"v\d+\.\d+\.\d+", tag)
+          assert re.fullmatch(r"[0-9a-f]{64}", checksum)
+          path = pathlib.Path("Formula/sudsy.rb")
+          text = path.read_text()
+          for field, value in [
+              ("url", f"https://github.com/monotropiclabs/sudsy/releases/download/{tag}/sudsy"),
+              ("version", tag[1:]),
+              ("sha256", checksum),
+          ]:
+              text, count = re.subn(rf'^  {field} "[^"]+"$', f'  {field} "{value}"', text, flags=re.M)
+              assert count == 1, f"Missing or duplicated formula field: {field}"
+          path.write_text(text)
+          PY
+            if git diff --quiet -- Formula/sudsy.rb; then exit 0; fi
+            git add Formula/sudsy.rb
+            git commit -m "Update Homebrew formula to $tag"
+            if git push origin HEAD:main; then exit 0; fi
+          done
+          echo "::error::Unable to update the Homebrew formula"
+          exit 1
