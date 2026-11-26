@@ -30,3 +30,20 @@ jobs:
           echo "$RUNNER_TEMP/bash32" >> "$GITHUB_PATH"
       - name: Test
         run: bash --version | head -1 && bash test/test.sh
+      - name: Test the direct installer
+        run: bash test/install.sh
+      - name: Test the Homebrew formula (macOS)
+        if: runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          # Tap a local repository containing the formula under review.
+          tap="$RUNNER_TEMP/sudsy-tap"
+          mkdir -p "$tap/Formula"
+          cp Formula/sudsy.rb "$tap/Formula/"
+          git -C "$tap" init -b main
+          git -C "$tap" add Formula
+          git -C "$tap" -c user.name=CI -c user.email=ci@example.invalid commit -m "Test formula"
+          brew tap monotropiclabs/sudsy "file://$tap"
+          brew install monotropiclabs/sudsy/sudsy
+          brew test monotropiclabs/sudsy/sudsy

@@ -13,30 +13,45 @@ run your app with the right secrets, and skip writing the same SOPS scripts for 
 It's one Bash script built on [SOPS](https://github.com/getsops/sops) and
 [age](https://github.com/FiloSottile/age). They handle the encryption. Sudsy handles the rest.
 
+[Visit the website](https://sudsy.monotropiclabs.com).
+
 ## Install
 
-Install SOPS and age (macOS or Linuxbrew):
+**Direct install (macOS or Linux)**
+
+Install [SOPS](https://github.com/getsops/sops) and [age](https://github.com/FiloSottile/age) first.
+With Homebrew: `brew install sops age`. On other Linux distributions, use their installation guides.
 
 ```bash
-brew install sops age
+curl -fsSL https://sudsy.monotropiclabs.com/install.sh | bash
 ```
 
-Then add Sudsy to your project:
+The installer downloads the latest stable GitHub release,
+checks its SHA-256, and installs Sudsy into `~/.local/bin`. Add that directory to your
+`PATH` if needed. See [other installation options](#other-installation-options) for
+version pinning and inspecting the installer before running it.
+
+**Homebrew**
+
+```bash
+brew tap monotropiclabs/sudsy https://github.com/monotropiclabs/sudsy.git
+brew install monotropiclabs/sudsy/sudsy
+```
+
+Homebrew installs SOPS and age for you. Update with `brew update` followed by
+`brew upgrade monotropiclabs/sudsy/sudsy`.
+
+**npm**
+
+If you want Sudsy pinned to a project, add it as a dev dependency:
 
 ```bash
 npm install --save-dev @monotropiclabs/sudsy
 ```
 
-Or install it globally:
-
-```bash
-npm install --global @monotropiclabs/sudsy
-```
-
-The examples below use `sudsy` directly. For a project-local npm installation, use
-`npx --no sudsy` instead, or run it through an npm script.
-
-Not using npm? Sudsy is just one Bash script. See [other installation options](#other-installation-options).
+You still need SOPS and age. The examples below use `sudsy` directly. With a
+project-local npm installation, use `npx --no sudsy` or run it through an npm script.
+For a global installation, use `npm install --global @monotropiclabs/sudsy`.
 
 ## Four steps. That's it.
 
@@ -141,33 +156,37 @@ It's an extra safeguard, not a replacement for reviewing what you commit.
 
 ## Other installation options
 
-Sudsy is one file, so you can put it on your `PATH` without npm. You still need
-SOPS and age.
-
-Pin a version from the [releases page](https://github.com/monotropiclabs/sudsy/releases)
-and check its checksum:
+**Inspect the installer and pin a version.** Download it first, read it, then run it:
 
 ```bash
-v=X.Y.Z   # the version you want
+curl -fsSLO https://sudsy.monotropiclabs.com/install.sh
+less install.sh
+bash install.sh --version v0.2.0
+```
+
+The default is the latest stable release. To choose a different installation directory,
+pass `--bin-dir /absolute/path`. To upgrade, run the installer again. To uninstall a
+direct installation, remove `~/.local/bin/sudsy` (or the executable at your chosen path).
+The installer does not change your shell configuration, private keys, or project files.
+
+The [installer source](docs/install.sh) is in this repository. The release checksum
+detects corruption; it is not an independent signature of the publisher.
+
+**Manual installation.** Sudsy is one Bash file. Pin a version from the
+[releases page](https://github.com/monotropiclabs/sudsy/releases) and verify its checksum:
+
+```bash
+v=0.2.0   # the version you want
 mkdir -p ~/.local/bin
 curl -fsSLO "https://github.com/monotropiclabs/sudsy/releases/download/v$v/sudsy"
 curl -fsSLO "https://github.com/monotropiclabs/sudsy/releases/download/v$v/sudsy.sha256"
 shasum -a 256 -c sudsy.sha256 && install -m 755 sudsy ~/.local/bin/sudsy
 ```
 
-Or follow `main`, unpinned:
-
-```bash
-mkdir -p ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/monotropiclabs/sudsy/main/bin/sudsy -o ~/.local/bin/sudsy
-chmod +x ~/.local/bin/sudsy
-```
-
-Ensure `~/.local/bin` is on your `PATH`.
-
-Every npm version is published from this repository's release workflow with a
-[provenance attestation](https://docs.npmjs.com/generating-provenance-statements),
-so `npm audit signatures` can check it was built from the tagged source.
+Ensure `~/.local/bin` is on your `PATH`. Linux users can also verify with
+`sha256sum -c sudsy.sha256`. For an npm installation, every version carries a
+[provenance attestation](https://docs.npmjs.com/generating-provenance-statements)
+linking it to the release workflow; verify with `npm audit signatures`.
 
 ## Commands
 
@@ -338,12 +357,14 @@ To release: bump `version` in both `package.json` and `bin/sudsy` (a test keeps 
 sync), commit, then tag and push:
 
 ```bash
-git tag v0.2.0 && git push origin v0.2.0
+git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 [`release.yml`](.github/workflows/release.yml) checks the tag matches both versions, runs the
 tests on Linux and macOS, publishes to npm with provenance, and creates a GitHub release with
-`sudsy` and `sudsy.sha256`. It publishes through npm trusted publishing, so there is no npm token
+`sudsy`, `sudsy.sha256`, `install.sh`, and `install.sh.sha256`. It then updates the
+[Homebrew formula](Formula/sudsy.rb) on `main` to the latest stable release. The formula uses
+that same release artifact and checksum. It publishes through npm trusted publishing, so there is no npm token
 to store or leak. One-time setup: on npmjs.com, under the package's settings, add a trusted
 publisher for GitHub Actions with repository `monotropiclabs/sudsy` and workflow `release.yml`.
 
