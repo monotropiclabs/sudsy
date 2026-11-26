@@ -1,49 +1,155 @@
-<p align="center">
-  <img src="assets/logo.svg" alt="sudsy logo: a bar of soap with a keyhole, blowing bubbles" width="200">
-</p>
-
-<h1 align="center">sudsy</h1>
+<h1 align="center">
+  <img src="assets/logo.svg" alt="sudsy" width="240">
+</h1>
 
 <p align="center">
-  <b>Squeaky-clean secrets for any project.</b><br>
-  Super simple and minimalist per-environment secrets management, built on top of <a href="https://github.com/getsops/sops">sops</a> + <a href="https://github.com/FiloSottile/age">age</a>.<br>
-  <i>Lather, rinse, repeat.</i>
+  <strong>Keep your secrets in git.</strong><br>
+  <em>Encrypted, obviously.</em>
 </p>
 
----
+Sudsy keeps encrypted `.env` files next to your code. Give each teammate their own key,
+run your app with the right secrets, and skip writing the same SOPS scripts for every project.
 
-sudsy lets you create a locally encrypted vault for each environment that's committed next to your code, directly in git. Each teammate has their own private key to read the vaults.
-
-sops is fantastic, but every project ends up with the same pile of little wrapper scripts:
-make a key, add it to `.sops.yaml`, edit `dev.enc.env`, run something with `prod`'s secrets,
-re-encrypt everything when a teammate joins. **sudsy is that pile of scripts, scrubbed and
-packaged once.** It's a single bash script with no dependencies beyond sops and age, and it
-never touches crypto itself. sops and age do all the real work.
+It's one Bash script built on [SOPS](https://github.com/getsops/sops) and
+[age](https://github.com/FiloSottile/age). They handle the encryption. Sudsy handles the rest.
 
 ## Install
 
-You need [sops](https://github.com/getsops/sops) and [age](https://github.com/FiloSottile/age):
+Install SOPS and age (macOS or Linuxbrew):
 
 ```bash
-brew install sops age          # macOS / Linuxbrew
+brew install sops age
 ```
 
-Then sudsy itself, whichever way suits the project:
+Then add Sudsy to your project:
 
 ```bash
-npm install --save-dev @monotropiclabs/sudsy   # per project: npm scripts find it automatically
-npm install --global @monotropiclabs/sudsy     # or everywhere
+npm install --save-dev @monotropiclabs/sudsy
 ```
 
-Either way, the command is just `sudsy`. Every npm version is published from this repo's
-release workflow with a [provenance attestation](https://docs.npmjs.com/generating-provenance-statements),
-so `npm audit signatures` can check it was built from the tagged source.
+Or install it globally:
 
-Not a Node project? It's one file, so just put it on your `PATH`. Pin a version from the
-[releases page](https://github.com/monotropiclabs/sudsy/releases) and check its checksum:
+```bash
+npm install --global @monotropiclabs/sudsy
+```
+
+The examples below use `sudsy` directly. For a project-local npm installation, use
+`npx --no sudsy` instead, or run it through an npm script.
+
+Not using npm? Sudsy is just one Bash script. See [other installation options](#other-installation-options).
+
+## Four steps. That's it.
+
+**1. Initialize your project.**
+
+```bash
+sudsy init
+```
+
+Creates or finds your age key and adds your public key to `.sops.yaml`.
+
+**2. Add your secrets.**
+
+```bash
+sudsy edit dev
+```
+
+Opens `dev.enc.env` in your editor. When you save, Sudsy encrypts the values.
+
+**3. Commit them.**
+
+```bash
+git add .sops.yaml dev.enc.env
+git commit -m "Add encrypted secrets"
+```
+
+Yes, commit the file. That's the point.
+
+**4. Run your app.**
+
+```bash
+sudsy run dev -- npm start
+```
+
+Your app gets the decrypted values as environment variables. Nothing to export manually.
+
+## Share with your team.
+
+Everyone gets their own key. No shared passwords.
+
+**A new teammate joins:**
+
+```bash
+sudsy init
+git add .sops.yaml
+git commit -m "Add my Sudsy key"
+git push
+```
+
+This adds their public key to the project's access rules.
+
+**Someone with existing access lets them in:**
+
+```bash
+git pull
+sudsy sync
+git commit -am "Update vault access"
+git push
+```
+
+`sudsy sync` shows which keys are gaining or losing access and asks for confirmation
+before re-encrypting the vaults. Verify new keys with their owners before approving access:
+anyone who can edit `.sops.yaml` can propose a new recipient. Outside a terminal,
+`sync` refuses to run unless you explicitly pass `--yes`.
+
+Need to give someone access to just one environment, or remove someone?
+See [managing access](#managing-access).
+
+## A little extra protection.
+
+```bash
+sudsy check
+```
+
+Catches common mistakes before they make it into git:
+
+- Plaintext dotenv files (`.env`, `.env.*`, `*.env`) in the proposed commit.
+- Vaults (`*.enc.*`) that aren't actually encrypted.
+- Age private keys in files in the proposed commit.
+
+Dotenv templates ending in `.example`, `.sample`, `.template` or `.dist` are allowed.
+The check includes staged changes and doesn't need a private key. Run it in a pre-commit
+hook and in CI, which can catch commits made with `--no-verify`.
+
+If you don't already have a pre-commit hook:
+
+```bash
+printf '#!/bin/sh\nexec sudsy check\n' > .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
+
+For a project-local npm installation, use `npx --no sudsy check` in your hook.
+If you already have a hook, add the check to it instead of overwriting it.
+
+In CI (with Sudsy installed as a dev dependency):
+
+```yaml
+- run: npx --no sudsy check
+```
+
+It's an extra safeguard, not a replacement for reviewing what you commit.
+
+## Other installation options
+
+Sudsy is one file, so you can put it on your `PATH` without npm. You still need
+SOPS and age.
+
+Pin a version from the [releases page](https://github.com/monotropiclabs/sudsy/releases)
+and check its checksum:
 
 ```bash
 v=X.Y.Z   # the version you want
+mkdir -p ~/.local/bin
 curl -fsSLO "https://github.com/monotropiclabs/sudsy/releases/download/v$v/sudsy"
 curl -fsSLO "https://github.com/monotropiclabs/sudsy/releases/download/v$v/sudsy.sha256"
 shasum -a 256 -c sudsy.sha256 && install -m 755 sudsy ~/.local/bin/sudsy
@@ -52,50 +158,16 @@ shasum -a 256 -c sudsy.sha256 && install -m 755 sudsy ~/.local/bin/sudsy
 Or follow `main`, unpinned:
 
 ```bash
+mkdir -p ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/monotropiclabs/sudsy/main/bin/sudsy -o ~/.local/bin/sudsy
 chmod +x ~/.local/bin/sudsy
 ```
 
-## Quick start
+Ensure `~/.local/bin` is on your `PATH`.
 
-```bash
-sudsy init                      # make (or find) your key, create .sops.yaml
-sudsy edit dev                  # opens dev.enc.env in your editor
-git add .sops.yaml dev.enc.env  # yes, commit the vault. It's encrypted.
-sudsy run dev -- npm start      # your app sees the secrets as env vars
-```
-
-## Demo
-
-This repo has a real example. Here's how it was made:
-
-```bash
-sudsy init
-```
-
-Creates [`.sops.yaml`](.sops.yaml), which lists the public keys allowed to read the vaults.
-Your private key stays on your machine.
-
-```bash
-sudsy edit demo
-```
-
-Opens an editor for your secrets. Change a value, save, and exit: sudsy writes
-[`demo.enc.env`](demo.enc.env) with the values encrypted. Both files can go in git.
-
-That's it! 🫧
-
-```bash
-sudsy cat demo
-```
-
-Prints the decrypted file back, only if you have my private key:
-
-```
-# This is an example file.
-example_key=example_value
-example_multiline=foo\nbar\nbaz
-```
+Every npm version is published from this repository's release workflow with a
+[provenance attestation](https://docs.npmjs.com/generating-provenance-statements),
+so `npm audit signatures` can check it was built from the tagged source.
 
 ## Commands
 
@@ -118,7 +190,7 @@ example_multiline=foo\nbar\nbaz
 
 ## How it works
 
-sudsy is a handful of conventions on top of sops:
+Sudsy is a handful of conventions on top of SOPS:
 
 - **One vault per environment**, `<env>.enc.env`, committed to the repo. Keys stay readable
   in diffs and only the values are encrypted.
@@ -133,28 +205,27 @@ sudsy is a handful of conventions on top of sops:
 
   In CI, put the key's contents in `SOPS_AGE_KEY` instead. No file needed.
 
-## Teammates
+## Example vault
 
-**Joining a project** (the lather):
+This repository contains a real encrypted vault: [demo.enc.env](demo.enc.env).
+Its [.sops.yaml](.sops.yaml) lists the public keys allowed to read it. The private
+key stays outside the repository.
 
-```bash
-sudsy init          # adds your public key to .sops.yaml
-git commit -am "Add my sudsy key" && git push
+With an authorized private key, `sudsy cat demo` prints the decrypted contents:
+
+```dotenv
+# This is an example file.
+example_key=example_value
+example_multiline=foo\nbar\nbaz
 ```
 
-**Letting them in** (the rinse). Anyone who can already decrypt runs:
+The example vault is encrypted for its existing recipient; you don't need access
+to it to try Sudsy with your own project.
 
-```bash
-git pull && sudsy sync && git commit -am "Re-encrypt vaults" && git push
-```
+## Managing access
 
-`sync` shows the keys each vault is about to gain and asks before re-encrypting. Read that
-list: anyone who can push to the repo can add a key to `.sops.yaml`, and saying yes lets that
-key read everything. Check each new key with its owner before you agree. Outside a terminal,
-`sync` refuses unless you pass `--yes`, so a script can't widen access without someone deciding to.
-
-**Just one environment** (a CI key, a contractor, a staging box). Rather than adding the key
-for everything, give it one vault:
+**Grant access to one environment.** For a CI key, contractor, or staging machine,
+give the key access to just the vault it needs:
 
 ```bash
 sudsy grant dev age1ci...   # dev gets its own rule: everyone who reads it now, plus this key
@@ -166,7 +237,7 @@ environment's rule before the catch-all one `init` writes. A teammate who joins 
 `sudsy init` goes into the catch-all only, and `init` tells them which environments have their
 own rule; someone runs `sudsy grant <env> <their key>` for each.
 
-**Removing someone**:
+**Remove someone.**
 
 ```bash
 sudsy revoke age1their...   # then commit .sops.yaml and the vaults
@@ -179,8 +250,7 @@ If you decline a vault, run the same `revoke` again later to finish it: the key 
 of `.sops.yaml`, and the rerun updates and rotates the vaults that still list it.
 
 It ends with the names of every secret they could read. They can still read old versions from
-git history, so **rotate each of those at its source**: a new API key, a new password. No
-amount of soap washes that off.
+git history, so **rotate each of those at its source**: a new API key, a new password.
 
 ## Recipes
 
@@ -222,26 +292,6 @@ export DATABASE_URL="$(sudsy get prod DATABASE_URL)"
 Generate a key just for CI (`age-keygen`), add its public key to `.sops.yaml`, run `sudsy sync`,
 and store the private half as a repository secret.
 
-**Catch a plaintext secret before it's committed**
-
-`sudsy check` looks at what the next commit holds (staged changes included) and fails if:
-
-- a `*.enc.*` vault isn't actually encrypted (say, someone saved plaintext over it)
-- a plaintext dotenv (`.env`, `.env.*`, `*.env`) is in git; names ending `.example`,
-  `.sample`, `.template` or `.dist` are allowed
-- any file contains an age private key
-
-It needs no key, so run it as a pre-commit hook and again in CI, which catches commits made
-with `--no-verify`:
-
-```bash
-printf '#!/bin/sh\nexec sudsy check\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
-```
-
-```yaml
-- run: npx --no sudsy check   # with sudsy in devDependencies; --no stops npx downloading anything
-```
-
 **Keep your key in a password manager**
 
 A key file on disk can be read by anything running as you. Instead, store the key in your
@@ -261,11 +311,11 @@ take quoted arguments but not pipes; wrap anything fancier in a small script.
 
 ## FAQ
 
-**Is this secure?** sudsy doesn't do any cryptography. It calls sops, which encrypts with
-age. Your security is exactly sops + age, plus not committing your private key (sudsy
-keeps it outside the repo by default).
+**Is this secure?** Sudsy doesn't do any cryptography. SOPS and age handle the encryption.
+Keep your private key outside the repository and review changes to access rules before
+approving them.
 
-**Why bash?** So it runs anywhere sops does, with nothing to install. It's written for bash
+**Why Bash?** So it runs anywhere SOPS does, without another runtime to install. It's written for bash
 3.2, so the stock macOS bash is fine.
 
 **Can I use YAML or JSON vaults?** sops can, and `sudsy sync` re-encrypts any `*.enc.*`
@@ -299,4 +349,4 @@ publisher for GitHub Actions with repository `monotropiclabs/sudsy` and workflow
 
 ## License
 
-[MIT](LICENSE). Go get sudsy. 🧼
+[MIT](LICENSE).
