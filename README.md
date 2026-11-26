@@ -26,7 +26,7 @@ With Homebrew: `brew install sops age`. On other Linux distributions, use their 
 curl -fsSL https://sudsy.monotropiclabs.com/install.sh | bash
 ```
 
-No Node.js or sudo required. The installer downloads the latest stable GitHub release,
+The installer downloads the latest stable GitHub release,
 checks its SHA-256, and installs Sudsy into `~/.local/bin`. Add that directory to your
 `PATH` if needed. See [other installation options](#other-installation-options) for
 version pinning and inspecting the installer before running it.

@@ -17,7 +17,7 @@ Usage: bash install.sh [--version X.Y.Z] [--bin-dir /absolute/path]
   --bin-dir   Install directory (default: ~/.local/bin).
   --help      Show this help.
 
-Requires Bash, curl, SOPS and age. No sudo or Node.js required.
+Requires Bash, curl, SOPS and age. Run as your regular user.
 EOF
 }
 
